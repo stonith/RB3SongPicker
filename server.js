@@ -6,8 +6,9 @@ const XboxService = require('./xbox-service');
 const { createApiRouter } = require('./api-router');
 
 const BASE_DIR = __dirname;
-const CONFIG_PATH = path.join(BASE_DIR, 'config.json');
-const DB_PATH = path.join(BASE_DIR, 'songs.sqlite');
+const STATE_DIR = process.env.STATE_DIR ? path.resolve(process.env.STATE_DIR) : BASE_DIR;
+const CONFIG_PATH = path.join(STATE_DIR, 'config.json');
+const DB_PATH = path.join(STATE_DIR, 'songs.sqlite');
 const PUBLIC_DIR = path.join(BASE_DIR, 'public');
 
 if (typeof fetch !== 'function') {

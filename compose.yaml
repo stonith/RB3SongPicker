@@ -1,0 +1,12 @@
+services:
+  rb3songpicker:
+    build: .
+    ports:
+      - "${RB3_PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      STATE_DIR: /data
+    volumes:
+      # Set RB3_STATE_DIR=/data to mount the host's /data directory instead.
+      - "${RB3_STATE_DIR:-./data}:/data"
+    restart: unless-stopped
