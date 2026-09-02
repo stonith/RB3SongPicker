@@ -7,7 +7,8 @@ COPY package.json package-lock.json ./
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
-RUN npm ci --omit=dev
+# Avoid a prebuilt sqlite3 binary that may require a newer glibc than Bookworm provides.
+RUN npm ci --omit=dev --build-from-source
 
 FROM node:24.20.0-bookworm-slim
 
