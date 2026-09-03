@@ -23,6 +23,10 @@ const apiRouter = createApiRouter({ db, configStore, xboxService });
 const app = express();
 app.use(express.json());
 app.use(express.static(PUBLIC_DIR));
+app.get('/api/version', (req, res) => {
+  const revision = String(process.env.APP_VERSION || 'development').trim();
+  res.json({ version: revision === 'development' ? revision : revision.slice(0, 7) });
+});
 app.use('/api', apiRouter);
 
 app.use((err, req, res, next) => {

@@ -12,10 +12,12 @@ RUN npm ci --omit=dev --build-from-source
 
 FROM node:24.20.0-bookworm-slim
 
+ARG APP_VERSION=development
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
-    STATE_DIR=/data
+    STATE_DIR=/data \
+    APP_VERSION=${APP_VERSION}
 
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --chown=node:node . ./

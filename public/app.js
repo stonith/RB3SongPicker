@@ -13,8 +13,16 @@ const state = {
   showExportCsvButton: false,
   filterDuplicates: false,
   saving: false,
-  loading: false
+  loading: false,
+  virtualStart: 0,
+  virtualEnd: 0,
+  songsRequestId: 0
 };
+
+const VIRTUAL_OVERSCAN = 12;
+const SEARCH_DEBOUNCE_MS = 250;
+let searchDebounceTimer;
+let virtualRenderFrame;
 
 const elements = {
   xboxIp: document.getElementById('xboxIp'),
@@ -28,6 +36,7 @@ const elements = {
   duplicateFilterButton: document.getElementById('duplicateFilterButton'),
   exportCsvButton: document.getElementById('exportCsvButton'),
   qrImage: document.getElementById('qrImage'),
+  appVersion: document.getElementById('appVersion'),
   searchInput: document.getElementById('searchInput'),
   randomButton: document.getElementById('randomButton'),
   randomMenuButton: document.getElementById('randomMenuButton'),
@@ -86,6 +95,16 @@ function renderQrImage() {
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(url)}`;
   elements.qrImage.src = qrUrl;
   elements.qrImage.alt = `Scan to open ${url}`;
+}
+
+async function loadVersion() {
+  if (!elements.appVersion) return;
+  try {
+    const { version } = await apiFetch('/api/version');
+    elements.appVersion.textContent = version;
+  } catch {
+    elements.appVersion.textContent = 'development';
+  }
 }
 
 async function loadConfig() {
@@ -269,6 +288,7 @@ function exportVisibleGridToCsv() {
 }
 
 async function loadSongs() {
+  const requestId = ++state.songsRequestId;
   state.loading = true;
   try {
     const params = new URLSearchParams();
@@ -278,8 +298,11 @@ async function loadSongs() {
     if (state.selectedListId && !state.editingList) params.set('listId', state.selectedListId);
     if (state.filterDuplicates) params.set('filterDuplicates', 'true');
     const data = await apiFetch(`/api/songs?${params.toString()}`);
+    if (requestId !== state.songsRequestId) return;
     state.songs = data.songs || [];
-    renderSongTable();
+    state.virtualStart = -1;
+    state.virtualEnd = -1;
+    renderSongTable(true);
     let listMessage = '';
     if (state.editingList) {
       listMessage = ' (editing list, full library shown)';
@@ -289,59 +312,104 @@ async function loadSongs() {
     const filterMessage = state.filterDuplicates ? ' (duplicates only)' : '';
     setStatus(`Showing ${state.songs.length} songs${listMessage}${filterMessage}.`);
   } catch (error) {
-    setStatus(`Cannot load songs: ${error.message}`, true);
+    if (requestId === state.songsRequestId) {
+      setStatus(`Cannot load songs: ${error.message}`, true);
+    }
   } finally {
-    state.loading = false;
+    if (requestId === state.songsRequestId) state.loading = false;
   }
 }
 
-function renderSongTable() {
-  elements.songsTableBody.innerHTML = '';
+function getVirtualRowHeight() {
+  const configuredHeight = getComputedStyle(elements.songTableWrapper)
+    .getPropertyValue('--song-row-height');
+  const rowHeight = Number.parseFloat(configuredHeight);
+  return Number.isFinite(rowHeight) && rowHeight > 0 ? rowHeight : 66;
+}
+
+function createSpacerRow(height) {
+  const row = document.createElement('tr');
+  row.className = 'virtual-spacer';
+  const cell = document.createElement('td');
+  cell.colSpan = 6;
+  cell.style.height = `${height}px`;
+  row.append(cell);
+  return row;
+}
+
+function createSongRow(song, editingSet, inEditMode) {
+  const row = document.createElement('tr');
+  row.className = 'song-row';
+  row.innerHTML = `
+      <td class="title-cell"><strong>${song.title || '—'}</strong>
+      <div class="song-meta">
+        <div class="song-meta-primary">${song.artist || '—'}</div>
+        <div class="song-meta-secondary">${song.album || '—'} | ${song.origin || '—'}</div>
+      </div>
+    </td>
+    <td class="artist-cell">${song.artist || '—'}</td>
+    <td class="album-cell">${song.album || '—'}</td>
+    <td class="origin-cell">${song.origin || '—'}</td>
+    <td class="shortname-column">${song.shortname || '—'}</td>
+    <td class="action-cell"></td>
+  `;
+
+  const actionCell = row.querySelector('.action-cell');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = inEditMode ? 'small-button secondary' : 'small-button primary';
+  if (inEditMode) {
+    const selected = editingSet.has(song.shortname);
+    button.textContent = selected ? '−' : '+';
+    button.title = selected ? 'Remove from song list' : 'Add to song list';
+    button.addEventListener('click', () => toggleSongInList(song.shortname));
+  } else {
+    button.textContent = 'Pick';
+    button.addEventListener('click', () => pickSong(song.shortname));
+  }
+  actionCell.append(button);
+  return row;
+}
+
+function renderSongTable(resetScroll = false, force = false) {
+  if (resetScroll) elements.songTableWrapper.scrollTop = 0;
   if (!state.songs.length) {
-    const emptyRow = document.createElement('tr');
-    emptyRow.innerHTML = '<td colspan="6" class="empty-row">No songs found.</td>';
-    elements.songsTableBody.append(emptyRow);
+    elements.songsTableBody.innerHTML = '<tr><td colspan="6" class="empty-row">No songs found.</td></tr>';
     updateGotoControls();
     return;
   }
 
+  const rowHeight = getVirtualRowHeight();
+  const viewportHeight = elements.songTableWrapper.clientHeight;
+  const { start, end } = VirtualList.calculateRange({
+    itemCount: state.songs.length,
+    scrollTop: elements.songTableWrapper.scrollTop,
+    viewportHeight,
+    rowHeight,
+    overscan: VIRTUAL_OVERSCAN
+  });
+  if (!resetScroll && !force && start === state.virtualStart && end === state.virtualEnd) return;
+
+  state.virtualStart = start;
+  state.virtualEnd = end;
+  const fragment = document.createDocumentFragment();
+  if (start) fragment.append(createSpacerRow(start * rowHeight));
   const editingSet = new Set(state.editingList?.items || []);
   const inEditMode = Boolean(state.editingList);
-
-  for (const song of state.songs) {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-        <td class="title-cell"><strong>${song.title || '—'}</strong>
-        <div class="song-meta">
-          <div class="song-meta-primary">${song.artist || '—'}</div>
-          <div class="song-meta-secondary">${song.album || '—'} | ${song.origin || '—'}</div>
-        </div>
-      </td>
-      <td class="artist-cell">${song.artist || '—'}</td>
-      <td class="album-cell">${song.album || '—'}</td>
-      <td class="origin-cell">${song.origin || '—'}</td>
-      <td class="shortname-column">${song.shortname || '—'}</td>
-      <td class="action-cell"></td>
-    `;
-
-    const actionCell = row.querySelector('.action-cell');
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = inEditMode ? 'small-button secondary' : 'small-button primary';
-
-    if (inEditMode) {
-      const selected = editingSet.has(song.shortname);
-      button.textContent = selected ? '−' : '+';
-      button.title = selected ? 'Remove from song list' : 'Add to song list';
-      button.addEventListener('click', () => toggleSongInList(song.shortname));
-    } else {
-      button.textContent = 'Pick';
-      button.addEventListener('click', () => pickSong(song.shortname));
-    }
-    actionCell.append(button);
-    elements.songsTableBody.append(row);
+  for (let index = start; index < end; index += 1) {
+    fragment.append(createSongRow(state.songs[index], editingSet, inEditMode));
   }
+  if (end < state.songs.length) fragment.append(createSpacerRow((state.songs.length - end) * rowHeight));
+  elements.songsTableBody.replaceChildren(fragment);
   updateGotoControls();
+}
+
+function scheduleVirtualRender() {
+  if (virtualRenderFrame) return;
+  virtualRenderFrame = requestAnimationFrame(() => {
+    virtualRenderFrame = null;
+    renderSongTable();
+  });
 }
 
 function getSortKey(song) {
@@ -365,35 +433,26 @@ function getSongGroupList() {
 }
 
 function getCurrentTopGroup() {
-  const rows = Array.from(elements.songsTableBody.children);
-  const visibleRows = rows
-    .map((row, index) => ({ row, index, rect: row.getBoundingClientRect() }))
-    .filter(({ rect }) => rect.bottom > 0 && rect.top < window.innerHeight);
-
-  if (!visibleRows.length) {
-    return state.songs.length ? getSongGroup(getSortKey(state.songs[0])) : null;
-  }
-
-  const fullyVisibleRows = visibleRows.filter(({ rect }) => rect.top >= 0);
-  const chosenRow = fullyVisibleRows.length
-    ? fullyVisibleRows.reduce((best, current) => (current.rect.top < best.rect.top ? current : best))
-    : visibleRows.reduce((best, current) => (current.rect.top < best.rect.top ? current : best));
-
-  return getSongGroup(getSortKey(state.songs[chosenRow.index]));
+  const index = Math.min(
+    state.songs.length - 1,
+    Math.max(0, Math.floor(elements.songTableWrapper.scrollTop / getVirtualRowHeight()))
+  );
+  return state.songs.length ? getSongGroup(getSortKey(state.songs[index])) : null;
 }
 
 function scrollToSongIndex(index) {
-  const row = elements.songsTableBody.children[index];
-  if (!row) return;
-  row.scrollIntoView({ behavior: 'auto', block: 'start' });
+  elements.songTableWrapper.scrollTop = index * getVirtualRowHeight();
+  scheduleVirtualRender();
 }
 
 function scrollToTop() {
-  window.scrollTo({ top: 0, behavior: 'auto' });
+  elements.songTableWrapper.scrollTop = 0;
+  scheduleVirtualRender();
 }
 
 function scrollToBottom() {
-  window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+  elements.songTableWrapper.scrollTop = elements.songTableWrapper.scrollHeight;
+  scheduleVirtualRender();
 }
 
 function navigateGroup(direction) {
@@ -521,7 +580,7 @@ function toggleSongInList(shortname) {
     items.add(shortname);
   }
   state.editingList.items = Array.from(items);
-  renderSongTable();
+  renderSongTable(false, true);
 }
 
 async function refreshLibrary() {
@@ -665,9 +724,10 @@ function attachEvents() {
   elements.gotoBottom.addEventListener('click', scrollToBottom);
   elements.pageButtons.songs.addEventListener('click', () => setPage('songs'));
   elements.pageButtons.admin.addEventListener('click', () => setPage('admin'));
-  elements.searchInput.addEventListener('input', async (event) => {
+  elements.searchInput.addEventListener('input', (event) => {
     state.searchText = event.target.value;
-    await loadSongs();
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => loadSongs(), SEARCH_DEBOUNCE_MS);
   });
   elements.songListSelect.addEventListener('change', async (event) => {
     state.selectedListId = event.target.value;
@@ -683,7 +743,13 @@ function attachEvents() {
   elements.randomPopularButton.addEventListener('click', () => pickRandom('popular'));
   document.addEventListener('click', closeRandomMenu);
   elements.gotoToggle?.addEventListener('click', toggleGotoNavigation);
-  window.addEventListener('resize', updateGotoDefaultState);
+  window.addEventListener('resize', () => {
+    updateGotoDefaultState();
+    state.virtualStart = -1;
+    state.virtualEnd = -1;
+    renderSongTable();
+  });
+  elements.songTableWrapper.addEventListener('scroll', scheduleVirtualRender);
   elements.newListButton.addEventListener('click', beginNewList);
   elements.editListButton.addEventListener('click', beginEditList);
   elements.deleteListButton.addEventListener('click', deleteSongList);
@@ -741,6 +807,7 @@ async function init() {
   renderSortButtons();
   updateSortHeaders();
   renderQrImage();
+  await loadVersion();
   if (elements.duplicateFilterButton) {
     elements.duplicateFilterButton.classList.add('hidden');
     elements.duplicateFilterButton.style.display = 'none';
