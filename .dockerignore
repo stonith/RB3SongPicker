@@ -1,0 +1,15 @@
+.git
+node_modules
+npm-debug.log*
+*.log
+
+# Runtime state is mounted at /data, never copied into the image.
+config.json
+songs.sqlite
+songs.sqlite-shm
+songs.sqlite-wal
+data
+
+# Development-only files.
+test
+docs
