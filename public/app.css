@@ -9,41 +9,17 @@
   box-sizing: border-box;
 }
 
+html {
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
+  overscroll-behavior: none;
   background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 22%),
     radial-gradient(circle at bottom right, rgba(168, 85, 247, 0.16), transparent 24%),
     #050814;
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  padding: 4px;
-  box-sizing: border-box;
-  background: linear-gradient(
-    90deg,
-    #f43f5e 0%,
-    #fb7185 12.5%,
-    #fbbf24 25%,
-    #22c55e 37.5%,
-    #38bdf8 50%,
-    #818cf8 62.5%,
-    #a855f7 75%,
-    #f43f5e 87.5%,
-    #f43f5e 100%
-  );
-  background-repeat: repeat-x;
-  background-size: 800% 100%;
-  animation: rainbow-border 14s linear infinite;
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: destination-out;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  z-index: 9999;
 }
 
 button {
@@ -65,15 +41,6 @@ button {
 .app-shell > * {
   position: relative;
   z-index: 2;
-}
-
-@keyframes rainbow-border {
-  from {
-    background-position: 0% 50%;
-  }
-  to {
-    background-position: 100% 50%;
-  }
 }
 
 .topbar,
@@ -589,8 +556,45 @@ input[type='search'] {
 }
 
 .song-table-wrapper {
+  --song-row-height: 66px;
   position: relative;
+  height: min(70vh, 700px);
+  min-height: 280px;
   overflow-x: auto;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+}
+
+.song-table-wrapper thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: rgba(30, 41, 59, 0.98);
+}
+
+.virtual-spacer td {
+  box-sizing: border-box;
+  padding: 0;
+  border: 0;
+}
+
+.song-row,
+.song-row td {
+  height: var(--song-row-height);
+  max-height: var(--song-row-height);
+}
+
+.song-row .title-cell strong,
+.song-row .artist-cell,
+.song-row .album-cell,
+.song-row .origin-cell,
+.song-row .shortname-column {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .goto-controls {
@@ -680,6 +684,10 @@ th:last-child {
 }
 
 @media (max-width: 760px) {
+  .song-table-wrapper {
+    --song-row-height: 104px;
+  }
+
   .app-shell {
     margin: 10px;
     padding: 10px;
@@ -760,12 +768,39 @@ th:last-child {
     padding: 12px 10px;
   }
 
-  table {
-    min-width: auto;
+  table,
+  tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
   }
 
   thead {
     display: none;
+  }
+
+  .song-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    width: 100%;
+  }
+
+  .song-row .title-cell {
+    min-width: 0;
+  }
+
+  .song-row .action-cell {
+    display: flex;
+    width: auto;
+    min-width: 78px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .virtual-spacer,
+  .virtual-spacer td {
+    display: block;
+    width: 100%;
   }
 
   .artist-cell,
@@ -776,6 +811,33 @@ th:last-child {
 
   .song-meta {
     display: block;
+  }
+
+  .song-row,
+  .song-row td {
+    height: var(--song-row-height);
+    max-height: var(--song-row-height);
+  }
+
+  .song-row .title-cell {
+    overflow: hidden;
+  }
+
+  .song-row .title-cell strong {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  .song-row .song-meta-primary {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .sort-buttons {
@@ -831,7 +893,14 @@ th:last-child {
 @media (max-width: 450px) {
   .song-table-wrapper {
     width: 100%;
+    height: clamp(220px, 60dvh, 700px);
+    min-height: 0;
     overflow-x: auto;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    overflow-anchor: none;
   }
 
   .panel,
@@ -872,8 +941,8 @@ th:last-child {
   .action-cell {
     position: static;
     right: auto;
-    min-width: auto;
-    width: 1%;
+    min-width: 68px;
+    width: auto;
     white-space: nowrap;
     text-align: right;
     background: rgba(15, 23, 42, 0.9);
