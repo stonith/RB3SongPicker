@@ -1,16 +1,13 @@
-FROM node:24.20.0-bookworm-slim AS dependencies
+FROM node:24-trixie-slim AS dependencies
 
 WORKDIR /app
 COPY package.json package-lock.json ./
 
-# sqlite3 may fall back to a native build when a prebuilt binary is unavailable.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-# Avoid a prebuilt sqlite3 binary that may require a newer glibc than Bookworm provides.
-RUN npm ci --omit=dev --build-from-source
+# Trixie ships glibc 2.42, new enough for the prebuilt sqlite3 binaries (they need GLIBC >= 2.38),
+# so no apt-get toolchain or --build-from-source fallback is needed.
+RUN npm ci --omit=dev
 
-FROM node:24.20.0-bookworm-slim
+FROM node:24-trixie-slim
 
 ARG APP_VERSION=development
 WORKDIR /app
