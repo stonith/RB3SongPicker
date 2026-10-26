@@ -10,6 +10,13 @@ songs.sqlite-shm
 songs.sqlite-wal
 data
 
-# Development-only files.
+# Development-only files and local agent/session artifacts.
 test
 docs
+.pi
+.context
+.ce
+.worktrees
+.env
+.env.*
+.DS_Store

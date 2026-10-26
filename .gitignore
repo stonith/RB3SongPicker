@@ -5,3 +5,15 @@ songs.sqlite-shm
 songs.sqlite-wal
 *.log
 .DS_Store
+.worktrees
+
+# Local agent state and review artifacts.
+.ce/
+.pi/
+.context/
+
+# Local environment overrides and container state.
+.env
+.env.*
+!.env.example
+data/
