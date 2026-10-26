@@ -44,6 +44,9 @@ const elements = {
   previewAudio: document.getElementById('previewAudio'),
   previewStoreLink: document.getElementById('previewStoreLink'),
   stopPreviewButton: document.getElementById('stopPreviewButton'),
+  replayPreviewButton: document.getElementById('replayPreviewButton'),
+  pickPreviewButton: document.getElementById('pickPreviewButton'),
+  showPreviewSongButton: document.getElementById('showPreviewSongButton'),
   showListManagement: document.getElementById('showListManagement'),
   showDuplicateFilterButton: document.getElementById('showDuplicateFilterButton'),
   showShortnameColumn: document.getElementById('showShortnameColumn'),
@@ -90,23 +93,67 @@ const elements = {
 
 const previewPlayer = new PreviewPlayer(elements.previewAudio, renderPreviewPlayer);
 
+function updatePreviewRow(row, playback) {
+  const selected = state.previewEnabled && playback.song?.shortname === row.dataset.shortname;
+  const active = selected && ['loading', 'playing', 'paused'].includes(playback.status);
+  row.classList.toggle('preview-active', Boolean(active));
+  row.classList.toggle('preview-last', Boolean(selected && !active));
+  if (selected) row.setAttribute('aria-current', 'true');
+  else row.removeAttribute('aria-current');
+  const indicator = row.querySelector('.preview-row-status');
+  if (indicator) indicator.textContent = selected
+    ? active ? (playback.status === 'paused' ? 'Paused' : 'Previewing') : 'Last previewed' : '';
+  const button = row.querySelector('[data-preview-shortname]');
+  if (button) {
+    const stoppable = selected && ['playing', 'loading'].includes(playback.status);
+    button.textContent = stoppable ? 'Stop' : 'Preview';
+    button.setAttribute('aria-pressed', String(Boolean(stoppable)));
+  }
+}
+
 function renderPreviewPlayer(playback) {
-  elements.previewPlayerPanel.classList.toggle('hidden', !playback.song);
-  if (playback.song) {
-    const preview = playback.song.preview;
-    elements.previewTitle.textContent = `${preview.title || playback.song.title} — ${preview.artist || playback.song.artist}`;
-    elements.previewStoreLink.href = preview.storeUrl;
+  // The enabled player always occupies its own space BELOW the grid. Starting
+  // and stopping clips never inserts/removes anything above the song rows.
+  elements.previewPlayerPanel.classList.toggle('hidden', !state.previewEnabled);
+  const song = playback.song;
+  const active = ['playing', 'loading', 'paused'].includes(playback.status);
+  const visible = song && state.songs.some(item => item.shortname === song.shortname);
+  elements.replayPreviewButton.disabled = !song || ['playing', 'loading'].includes(playback.status);
+  elements.stopPreviewButton.disabled = !song || !active;
+  elements.pickPreviewButton.disabled = !song;
+  elements.showPreviewSongButton.disabled = !visible;
+  elements.showPreviewSongButton.title = song && !visible
+    ? 'This song is not in the current results. Clear or change your filters to find it.' : 'Scroll to the last previewed song';
+  elements.previewStoreLink.hidden = !song;
+  if (song) {
+    elements.previewTitle.textContent = `${song.title} — ${song.artist}`;
+    elements.previewStoreLink.href = song.preview.storeUrl;
     elements.previewPlaybackStatus.textContent = {
       loading: 'Loading preview…', playing: 'Playing preview', paused: 'Paused',
+      stopped: 'Stopped · Last previewed', finished: 'Finished · Last previewed',
       error: 'Cannot play preview. Check your connection or open it in iTunes.'
     }[playback.status] || '';
+    if (!visible) elements.previewPlaybackStatus.textContent += ' · Not in current results';
+  } else {
+    elements.previewTitle.textContent = 'Song preview';
+    elements.previewPlaybackStatus.textContent = 'Choose Preview beside a song. Audio plays on this device.';
+    elements.previewStoreLink.removeAttribute('href');
   }
-  for (const button of elements.songsTableBody.querySelectorAll('[data-preview-shortname]')) {
-    const active = playback.song?.shortname === button.dataset.previewShortname
-      && ['playing', 'loading'].includes(playback.status);
-    button.textContent = active ? 'Stop' : 'Preview';
-    button.setAttribute('aria-pressed', String(active));
-  }
+  for (const row of elements.songsTableBody.querySelectorAll('.song-row')) updatePreviewRow(row, playback);
+}
+
+function showPreviewSong() {
+  const shortname = previewPlayer.state.song?.shortname;
+  const index = state.songs.findIndex(song => song.shortname === shortname);
+  if (index < 0) return;
+  const rowHeight = getVirtualRowHeight();
+  elements.songTableWrapper.scrollTop = Math.max(0, index * rowHeight
+    - (elements.songTableWrapper.clientHeight - rowHeight) / 2);
+  renderSongTable(false, true);
+  const row = Array.from(elements.songsTableBody.querySelectorAll('.song-row'))
+    .find(item => item.dataset.shortname === shortname);
+  row?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  row?.focus({ preventScroll: true });
 }
 
 async function loadPreviewStatus(syncControls = false) {
@@ -125,7 +172,7 @@ async function loadPreviewStatus(syncControls = false) {
     const cooldown = data.cooldownUntil ? ` Cooling down until ${new Date(data.cooldownUntil).toLocaleTimeString()}.` : '';
     elements.previewProgress.textContent = `${data.enabled ? 'Matching enabled' : 'Off / paused'} · ${counts.matched || 0} matched · ${remaining} queued · ${(counts.unavailable || 0) + (counts.ambiguous || 0)} unavailable.${cooldown}`;
     if (changed) {
-      previewPlayer.stop();
+      previewPlayer.clear();
       for (const song of state.songs) song.preview = data.enabled ? { status: 'pending' } : undefined;
       renderSongTable(false, true);
     }
@@ -449,6 +496,8 @@ function createSpacerRow(height) {
 function createSongRow(song, editingSet, inEditMode) {
   const row = document.createElement('tr');
   row.className = 'song-row';
+  row.dataset.shortname = song.shortname;
+  row.tabIndex = -1;
   row.innerHTML = `
       <td class="title-cell"><strong></strong>
       <div class="song-meta">
@@ -502,6 +551,12 @@ function createSongRow(song, editingSet, inEditMode) {
     button.addEventListener('click', () => pickSong(song.shortname));
   }
   actionCell.append(button);
+  if (state.previewEnabled) {
+    const indicator = document.createElement('span');
+    indicator.className = 'preview-row-status';
+    actionCell.append(indicator);
+  }
+  updatePreviewRow(row, previewPlayer.state);
   return row;
 }
 
@@ -510,6 +565,7 @@ function renderSongTable(resetScroll = false, force = false) {
   if (!state.songs.length) {
     elements.songsTableBody.innerHTML = '<tr><td colspan="6" class="empty-row">No songs found.</td></tr>';
     updateGotoControls();
+    renderPreviewPlayer(previewPlayer.state);
     return;
   }
 
@@ -536,6 +592,7 @@ function renderSongTable(resetScroll = false, force = false) {
   if (end < state.songs.length) fragment.append(createSpacerRow((state.songs.length - end) * rowHeight));
   elements.songsTableBody.replaceChildren(fragment);
   updateGotoControls();
+  renderPreviewPlayer(previewPlayer.state);
 }
 
 function scheduleVirtualRender() {
@@ -851,6 +908,17 @@ function attachEvents() {
   elements.saveConfigButton.addEventListener('click', saveConfig);
   elements.savePreviewsButton.addEventListener('click', savePreviewSettings);
   elements.stopPreviewButton.addEventListener('click', () => previewPlayer.stop());
+  elements.replayPreviewButton.addEventListener('click', () => previewPlayer.play(previewPlayer.state.song));
+  elements.pickPreviewButton.addEventListener('click', () => {
+    if (previewPlayer.state.song) pickSong(previewPlayer.state.song.shortname);
+  });
+  elements.showPreviewSongButton.addEventListener('click', showPreviewSong);
+  // Existing fixed letter navigation must not cover bottom-player controls or
+  // attribution. It returns as soon as the player is out of view.
+  const previewVisibility = new IntersectionObserver(([entry]) => {
+    elements.gotoControls.classList.toggle('preview-player-visible', entry.isIntersecting && state.previewEnabled);
+  }, { rootMargin: '0px 0px 70px 0px' });
+  previewVisibility.observe(elements.previewPlayerPanel);
   elements.refreshButton.addEventListener('click', refreshLibrary);
   elements.showListManagement.addEventListener('change', saveSettings);
   elements.showDuplicateFilterButton.addEventListener('change', saveSettings);

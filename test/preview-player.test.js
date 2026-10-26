@@ -16,11 +16,13 @@ test('one shared player toggles, stops and does not preload audio', async () => 
   await player.play(song());
   expect(player.state.status).toBe('playing');
   await player.play(song());
-  expect(player.state.status).toBe('idle');
+  expect(player.state).toMatchObject({ status: 'stopped', song: { shortname: 'one' } });
   expect(audio.src).toBe('');
   await player.play(song('two'));
   player.stop();
-  expect(player.state.song).toBeNull();
+  expect(player.state.song.shortname).toBe('two');
+  player.clear();
+  expect(player.state).toEqual({ status: 'idle', song: null });
 });
 test('stale play promise rejection cannot break a newer preview', async () => {
   const audio = audioMock();
@@ -41,5 +43,19 @@ test('play failure is surfaced once without retries or metadata calls', async ()
   expect(player.state.status).toBe('error');
   expect(audio.play).toHaveBeenCalledTimes(1);
   audio.currentSrc = audio.src; audio.ended = true; audio.emit('ended');
-  expect(player.state.status).toBe('idle');
+  expect(player.state).toMatchObject({ status: 'finished', song: { shortname: 'one' } });
+});
+
+test('stopping a loading clip keeps its identity and ignores stale completion', async () => {
+  const audio = audioMock();
+  let resolve;
+  audio.play.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const player = new PreviewPlayer(audio, jest.fn());
+  const playing = player.play(song());
+  player.stop();
+  resolve();
+  await playing;
+  expect(player.state).toMatchObject({ status: 'stopped', song: { shortname: 'one' } });
+  await player.play(player.state.song);
+  expect(player.state.status).toBe('playing');
 });

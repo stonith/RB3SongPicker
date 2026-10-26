@@ -6,8 +6,9 @@
       this.onChange = onChange;
       this.generation = 0;
       this.state = { status: 'idle', song: null };
-      const isCurrent = () => this.state.song && audio.currentSrc === this.state.song.preview.previewUrl;
-      audio.addEventListener('ended', () => { if (isCurrent() && audio.ended) this.stop(); });
+      const isCurrent = () => this.state.song && !['idle', 'stopped', 'finished'].includes(this.state.status)
+        && audio.currentSrc === this.state.song.preview.previewUrl;
+      audio.addEventListener('ended', () => { if (isCurrent() && audio.ended) this.stop('finished'); });
       audio.addEventListener('error', () => { if (isCurrent() && audio.error) this.update('error'); });
       audio.addEventListener('pause', () => {
         if (isCurrent() && this.state.status === 'playing' && !audio.ended) this.update('paused');
@@ -20,17 +21,24 @@
       this.onChange(this.state);
     }
 
-    stop() {
+    stop(status = 'stopped') {
       this.generation++;
-      this.state = { status: 'idle', song: null };
+      // Keep the last preview's identity after unloading audio. Virtualized rows
+      // and the bottom player can still point the listener back to that song.
+      this.state = { ...this.state, status: this.state.song ? status : 'idle' };
       this.audio.pause();
       this.audio.removeAttribute('src');
       this.audio.load();
       this.onChange(this.state);
     }
 
+    clear() {
+      this.state = { status: 'idle', song: null };
+      this.stop();
+    }
+
     async play(song) {
-      if (song.preview?.status !== 'matched') return;
+      if (song?.preview?.status !== 'matched') return;
       if (this.state.song?.shortname === song.shortname && ['playing', 'loading'].includes(this.state.status)) {
         this.stop();
         return;

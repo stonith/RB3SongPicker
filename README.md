@@ -62,7 +62,9 @@ This app runs on a PC on the same local network as your Xbox.
 
 Song previews are **off by default**. In Admin → **Song previews**, choose the two-letter storefront country, enable background matching, and save. Confirm that Apple's preview terms permit your use before enabling; this project does not establish that permission. See [Apple's Search API terms](https://performance-partners.apple.com/resources/documentation/itunes-store-web-service-search-api/).
 
-- **Preview** plays a confidently matched clip on the current phone/laptop without selecting it on the Xbox. **Pick** stops preview playback before sending the selection.
+- **Preview** plays a confidently matched clip on the current phone/laptop without selecting it on the Xbox. The shared player stays **below the grid**, never over it; starting/stopping playback does not move the song list.
+- The current row is highlighted while previewing. After Stop, end-of-clip, or Pick, a quieter **Last previewed** highlight and the song's title remain until you preview another song. The bottom player offers **Replay**, **Pick**, and **Show in list** to return to the correct row after scrolling. Show in list respects active filters and is disabled when the song is not in the current results.
+- **Pick** stops preview playback before sending the selection; disabling previews or changing storefront clears the preview context.
 - **Queued** means matching is pending; **No clip** means no sufficiently reliable match was found. Covers and different live/acoustic/remixed recordings are deliberately rejected.
 - Audio streams directly from Apple after a tap. It requires internet and is not saved or proxied by this app. The player includes a store link, the official iTunes badge, and attribution; those alone do not establish permission for this use.
 - A single background worker spaces Apple metadata requests at least **3.5 seconds apart** (roughly 17/minute). Retries share the same budget, honor `Retry-After`, and apply a persistent provider-wide cooldown. Apple's approximate 20/minute limit may change, and other apps sharing your public IP can still cause throttling.
