@@ -27,6 +27,18 @@ describe('API Router - /songs/refresh', () => {
       setSetting: jest.fn().mockResolvedValue()
     };
 
+    db.transaction = jest.fn(async (work) => {
+      await db.promisifyRun('BEGIN TRANSACTION');
+      try {
+        const result = await work();
+        await db.promisifyRun('COMMIT');
+        return result;
+      } catch (error) {
+        await db.promisifyRun('ROLLBACK');
+        throw error;
+      }
+    });
+
     configStore = {
       load: jest.fn().mockReturnValue({ xboxIp: '192.168.1.100', xboxPort: 8080 }),
       save: jest.fn()
