@@ -85,3 +85,9 @@
   --st-sh-pop:0 10px 40px rgba(15,23,42,.08),0 1px 3px rgba(15,23,42,.06);
   color-scheme:light;
 }
+
+/* Compatibility colors used by small inline status messages in the original theme. */
+[data-theme="default"]{
+  --st-accent-text:#a5f3fc;
+  --st-danger-text:#fca5a5;
+}
