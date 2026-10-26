@@ -1,4 +1,7 @@
 {
   "xboxIp": "192.168.0.100",
-  "xboxPort": 21070
+  "xboxPort": 21070,
+  "eventsBindAddress": "0.0.0.0",
+  "eventsPort": 21070,
+  "pauseAfterAttempt": false
 }

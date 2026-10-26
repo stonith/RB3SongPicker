@@ -13,6 +13,7 @@ Tired of scrolling through hundreds of songs mid-party while your friends are wa
 - 🎵 **Browse your full song library** from your phone, tablet, or laptop — no need to touch the Xbox at all.
 - 🔍 **Search songs instantly** by title, artist, album, or origin — find that one song in seconds.
 - 📋 **Create custom song lists** — build a setlist for your party (e.g. "80s Night 🕺", "Karaoke Hits 🎤", "Hard mode only 💀"). Switch between them on the fly.
+- ▶️ **Start an automatic session queue** from a saved Song List. The next song is selected when RB3Enhanced reports song selection; players still start gameplay. Everyone can add, remove, and reorder upcoming songs without changing the saved list.
 - 🎲 **Pick a random song** — feeling adventurous? Hit the random button! You can even pick *random unpopular* (discover hidden gems) or *random popular* (crowd-pleasers only). Random picks also work within a specific song list!
 - 📊 **Sort your library** by title, artist, album or origin.
 - ✏️ **Edit and delete your song lists** — tweak your setlist anytime.
@@ -35,7 +36,7 @@ This app runs on a PC on the same local network as your Xbox.
 **What you need:**
 - A Windows/Mac/Linux PC connected to the same Wi-Fi or LAN as your Xbox 360.
 - [RB3Enhanced](https://github.com/RBEnhanced/RB3Enhanced) installed on the Xbox — this mod enables the Xbox HTTP server that RB3 Song Picker talks to.
-- [Node.js](https://nodejs.org/) version 18 or newer installed on the PC.
+- [Node.js](https://nodejs.org/) version 24.20.0 or newer installed on the PC.
 
 > **Note:** RB3 Song Picker completely replaces the built-in web interface that comes with RB3Enhanced with its own full-featured UI.
 
@@ -57,6 +58,34 @@ This app runs on a PC on the same local network as your Xbox.
 - Song library is fetched from the Xbox HTTP server (`/list_songs`) and cached locally in a SQLite database (`songs.sqlite`).
 - All browser requests are proxied through the backend at `http://localhost:3000`.
 - Song selection sends a `/jump?shortname=...` request to the Xbox server.
+
+### Automatic session queue
+
+1. Enable `[HTTP] EnableHTTPServer=true` and `[Events] EnableEvents=true` in the console's `rb3.ini`. Configure its Events `BroadcastTarget` to reach the app host on UDP 21070 (or your configured events port).
+2. In Admin, set the **Xbox IP**, HTTP port, **UDP bind address** and **UDP events port**. The Xbox IP is also the accepted UDP source. Allow that UDP port through the host firewall. Admin shows listener errors and last observed screen/events; silence alone is not a disconnection signal.
+3. In Songs, choose a **saved Song List**, choose its sort order, and press **Start queue**. All available list members are included, ignoring search/duplicate filters. Starting from **All songs** is unavailable.
+4. Queue becomes the session workspace. **+ Add songs** opens a full-height phone picker or a wide-screen side panel. Add songs, including deliberate repeats; remove or move upcoming entries using their controls. These are session-only edits. The requested/playing entry is locked; use **Skip** to move past it.
+5. **Pause/Resume** suspend/resume future selections, **Skip** moves past an entry without interrupting gameplay, and **Stop** releases automatic control. Players handle starting gameplay and navigating back to song selection. The queue stops at its end—no looping.
+
+A valid configured-console `SCREEN_NAME = "song_select_screen"` permits Pick immediately. Start/end events track attempts; the protocol does not distinguish completion, quit, or failure. By default all attempts advance. Admin's **Pause after each song attempt** is off by default; when enabled, every attempt pauses and Resume continues to the next song.
+
+- One shared queue updates all browsers. Closing a phone does not stop it. Browsing elsewhere does not get hijacked by remote edits; use Songs/Queue to switch views.
+- Pending Add shows **Adding…**; **Result unknown — Retry** retries the same action rather than adding an accidental repeat. Once resolved, a new Add deliberately creates another entry.
+- Manual Pick/Random are blocked while the queue owns selection, even when paused. Stop the queue before manual picking. **Preview** is available on the current and upcoming queue songs as well as in Add songs when previews are enabled. It becomes **Stop** while previewing; repeated entries share one local audio player. Preview never selects, reorders or advances a queue entry. Matching availability comes from cached metadata only; no provider search is triggered by previewing.
+- Sessions persist, but app restarts restore them **paused**, never automatically selecting. Ordinary restart recovery needs new screen evidence and Resume, not a console restart.
+- Storage failure disables console selections immediately. Restore database/filesystem availability, then use **Reconcile queue storage** in Admin. It records retained results and gameplay boundaries without retransmitting; ongoing failure stays visible. Successful recovery leaves the queue paused and requires new song-selection evidence and explicit Resume. Any unresolved transmitted request remains quarantined.
+- A timed-out transmitted selection is different: it may still act later, so it blocks further console selections. If its result cannot resolve it, actually restart the game/console, then use the conditional **Confirm console restarted** action in Admin. Confirmation leaves the queue paused and clears old game observations. Stop cannot retract a command already sent.
+- Use one app process per state directory, on a trusted LAN only. The Admin PIN gates the UI, not the APIs; UDP source filtering is not authentication.
+
+#### Queue verification
+
+The normal Jest suite covers decoder/source validation, real SQLite mutations, controller transitions, API/SSE, restart recovery and client state without a console. Optional Playwright checks use only synthetic localhost traffic:
+
+- `node test/queue-workspace-browser.cjs` — workspace/navigation/control states, both themes and phone/desktop layouts.
+- `node test/queue-picker-browser.cjs` — six theme/viewport cases, 5,000-song virtualization, two-client edits, accessible controls, repeats/Retry, previews and Admin recovery.
+- `node test/queue-browser.cjs` — real app, SQLite, UDP decoder and SSE through two browsers; only Xbox selection is replaced with a fake transport. Proves progression, repeats, browser closure, completion, Start/Stop/Start during manual gameplay, and Admin storage reconciliation without retransmission.
+
+Use an external Playwright installation via `PLAYWRIGHT_MODULE` if needed; `BROWSER_EXECUTABLE` can select an installed Chromium executable. Screenshots are written to an OS temporary directory. These checks do not prove physical-console or Docker-network delivery.
 
 ### Optional song previews
 
@@ -96,6 +125,12 @@ For optional Chromium UI checks, install Playwright outside the project or in yo
 | `GET` | `/api/local-url` | Get the local network URL (used to generate the QR code) |
 | `GET/POST` | `/api/previews` | Read progress or save `{ enabled, country, negativeDays }` (default retry interval: 30 days) |
 | `POST` | `/api/previews/lookup` | Read cached preview states for `{ shortnames: [...] }` (maximum 200); never calls Apple |
+| `GET` | `/api/queue` | Authoritative `{ version, session, operation }` snapshot |
+| `GET` | `/api/queue/events` | SSE `snapshot` and `diagnostics` updates |
+| `POST` | `/api/queue/commands` | Revisioned/idempotent start, edit, control and console-restart recovery commands |
+| `POST` | `/api/queue/storage/reconcile` | Explicit storage recovery, without retransmission; returns snapshot/diagnostics or 503 with ongoing storage failure |
+| `GET` | `/api/queue/diagnostics` | UDP listener and observed game-state diagnostics |
+| `GET/POST` | `/api/queue/preferences` | Read/save `{ pauseAfterAttempt: boolean }` |
 
 ### Configuration
 
@@ -106,7 +141,7 @@ For optional Chromium UI checks, install Playwright outside the project or in yo
 ### Data storage
 
 - All data is stored in `songs.sqlite` (excluded from version control).
-- Songs, pick counts, custom song lists, and app settings are all stored in the local database.
+- Songs, pick counts, custom song lists, session queue snapshots, and command receipts are stored in the local database. Console/network settings and the pause-after-attempt preference are stored in `config.json`.
 - The database is created automatically on first run.
 
 ### Feature toggles (Admin page)

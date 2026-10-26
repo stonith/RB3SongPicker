@@ -1,8 +1,9 @@
 const express = require('express');
 const os = require('os');
+const { isIPv4 } = require('node:net');
 
 const MAX_SONGLIST_ITEMS = 5000;
-const ALLOWED_SONG_SORT_COLUMNS = ['title', 'artist', 'album', 'origin', 'shortname', 'picks'];
+const { songOrderBy } = require('./song-query');
 
 function wrapAsync(handler) {
   return (req, res, next) => {
@@ -25,7 +26,7 @@ function songMatchesSearch(song, tokens) {
   });
 }
 
-function createApiRouter({ db, configStore, xboxService, previewStore, previewWorker }) {
+function createApiRouter({ db, configStore, xboxService, previewStore, previewWorker, queueController, queueRuntime }) {
   const router = express.Router();
 
   if (previewStore) {
@@ -79,6 +80,8 @@ function createApiRouter({ db, configStore, xboxService, previewStore, previewWo
     res.json({
       xboxIp: config.xboxIp,
       xboxPort: config.xboxPort,
+      eventsBindAddress: config.eventsBindAddress,
+      eventsPort: config.eventsPort,
       theme: config.theme === 'strata' ? 'strata' : 'default',
       adminPinEnabled: Boolean(config.adminPinHash)
     });
@@ -86,15 +89,30 @@ function createApiRouter({ db, configStore, xboxService, previewStore, previewWo
 
   router.post('/config', wrapAsync(async (req, res) => {
     const currentConfig = configStore.load();
+    const body = { ...req.body };
+    // Existing clients may send the HTTP port as a numeric string.
+    if (typeof body.xboxPort === 'string') body.xboxPort = Number(body.xboxPort);
+    if (['xboxIp', 'eventsBindAddress'].some(key => Object.hasOwn(body, key) && !isIPv4(body[key]))
+        || ['xboxPort', 'eventsPort'].some(key => Object.hasOwn(body, key)
+          && (!Number.isInteger(body[key]) || body[key] < 1 || body[key] > 65535))) {
+      return res.status(400).json({ error: 'Provide IPv4 addresses and integer ports from 1 to 65535.' });
+    }
     const updatedConfig = configStore.save({
       ...currentConfig,
       xboxIp: req.body?.xboxIp || currentConfig.xboxIp,
-      xboxPort: Number(req.body?.xboxPort) || currentConfig.xboxPort,
+      xboxPort: body.xboxPort ?? currentConfig.xboxPort,
+      eventsBindAddress: req.body?.eventsBindAddress ?? currentConfig.eventsBindAddress,
+      eventsPort: req.body?.eventsPort ?? currentConfig.eventsPort,
       theme: req.body?.theme === 'strata' ? 'strata' : (req.body?.theme === 'default' ? 'default' : currentConfig.theme)
     });
+    if (['xboxIp', 'xboxPort', 'eventsBindAddress', 'eventsPort'].some(key => updatedConfig[key] !== currentConfig[key])) {
+      await queueRuntime?.configure(updatedConfig);
+    }
     res.json({
       xboxIp: updatedConfig.xboxIp,
       xboxPort: updatedConfig.xboxPort,
+      eventsBindAddress: updatedConfig.eventsBindAddress,
+      eventsPort: updatedConfig.eventsPort,
       theme: updatedConfig.theme,
       adminPinEnabled: Boolean(updatedConfig.adminPinHash)
     });
@@ -171,16 +189,12 @@ function createApiRouter({ db, configStore, xboxService, previewStore, previewWo
         query += ` AND s.shortname IN (SELECT shortname FROM songlist_items WHERE list_id = ?)`;
         params.push(listId);
       }
-      const orderBy = ALLOWED_SONG_SORT_COLUMNS.includes(sort) ? sort : 'title';
-      const direction = order === 'desc' ? 'DESC' : 'ASC';
-      query += ` ORDER BY ${orderBy} ${direction}`;
+      query += ` ORDER BY ${songOrderBy(sort, order)}`;
     } else {
       if (conditions.length) {
         query += ' WHERE ' + conditions.join(' AND ');
       }
-      const orderBy = ALLOWED_SONG_SORT_COLUMNS.includes(sort) ? sort : 'title';
-      const direction = order === 'desc' ? 'DESC' : 'ASC';
-      query += ` ORDER BY ${orderBy} ${direction}`;
+      query += ` ORDER BY ${songOrderBy(sort, order)}`;
     }
 
     const songs = await db.promisifyAll(query, params);
@@ -224,14 +238,13 @@ function createApiRouter({ db, configStore, xboxService, previewStore, previewWo
 
   router.post('/songs/:shortname/pick', wrapAsync(async (req, res) => {
     const shortname = decodeURIComponent(req.params.shortname);
-    await xboxService.fetch(`/jump?shortname=${encodeURIComponent(shortname)}`);
-    await db.promisifyRun(
-      `INSERT INTO picks (shortname, count) VALUES (?, 1)
-        ON CONFLICT(shortname) DO UPDATE SET count = count + 1`,
-      [shortname]
-    );
-    const row = await db.promisifyGet('SELECT count FROM picks WHERE shortname = ?', [shortname]);
-    res.json({ shortname, count: row ? row.count : 0 });
+    if (!queueController) return res.status(503).json({ code: 'SELECTION_UNAVAILABLE', error: 'Selection controller unavailable.' });
+    try {
+      res.json(await queueController.manualPick(shortname));
+    } catch (error) {
+      const snapshot = await queueController.enqueue(() => queueController.store.read());
+      res.status(error.status || 503).json({ code: error.code || 'SELECTION_FAILED', error: error.message, snapshot });
+    }
   }));
 
   router.get('/songlists', wrapAsync(async (req, res) => {

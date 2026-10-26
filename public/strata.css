@@ -1126,3 +1126,14 @@ a:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* Queue uses the same layout contracts; only themed material changes. */
+.queue-compact { color: var(--st-ink-soft); }
+.queue-current { border-left-color: var(--st-accent); }
+.queue-current h3 { color: var(--st-accent-text); }
+.queue-upcoming li { border-bottom-color: var(--st-line); }
+
+.queue-picker { background: var(--st-surface); color: var(--st-ink); border-color: var(--st-line); }
+.queue-picker-header .hint { color: var(--st-ink-muted); }
+.queue-picker input:focus-visible, .queue-picker select:focus-visible { outline-color: var(--st-focus); }
+.queue-add-songs { box-shadow: var(--st-sh-pop); }

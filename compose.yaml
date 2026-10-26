@@ -3,6 +3,9 @@ services:
     build: .
     ports:
       - "${RB3_PORT:-3000}:3000"
+      # UDP is separate from both the web UI and the console's HTTP port.
+      # Target the Docker host's LAN address from RB3Enhanced (prefer unicast).
+      - "${RB3_EVENTS_PORT:-21070}:21070/udp"
     environment:
       PORT: 3000
       STATE_DIR: /data

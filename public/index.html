@@ -15,9 +15,77 @@
       <h1>RB3 Song Picker 🎸</h1>
       <nav class="page-tabs">
         <button id="songsPageButton" class="tab-button active">Songs 🎶</button>
+        <button id="queuePageButton" class="tab-button" type="button">Queue</button>
         <button id="adminPageButton" class="tab-button admin-link" title="Admin">⚙️</button>
       </nav>
     </header>
+
+    <div id="queueCompactStatus" class="queue-compact hidden">
+      <button id="openQueueButton" class="secondary" type="button">Open queue</button>
+      <span id="queueCompactText"></span>
+    </div>
+
+    <section id="queuePage" class="hidden" aria-labelledby="queueTitle">
+      <section class="panel queue-workspace">
+        <div class="panel-header">
+          <div>
+            <h2 id="queueTitle">Session queue</h2>
+            <p id="queueSource">Start from a saved Song List in Songs.</p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <p id="queueSyncStatus" class="hint" role="status">Connecting to shared queue…</p>
+          <h3 id="queueStatus" role="status" aria-live="polite" tabindex="-1">No session queue</h3>
+          <p id="queueWarning" class="queue-warning" hidden></p>
+          <button id="queueRecoveryAdminButton" class="secondary" type="button" hidden>Open Admin recovery</button>
+          <p id="queueProgress" class="hint"></p>
+          <section id="queueCurrent" class="queue-current" hidden aria-labelledby="queueCurrentLabel">
+            <h3 id="queueCurrentLabel">Current · Locked</h3>
+            <p id="queueCurrentTitle"></p>
+            <p id="queueCurrentArtist" class="hint"></p>
+            <p class="hint">Locked against removal and reordering. Players start gameplay; selection is not confirmation of play.</p>
+          </section>
+          <div id="queueControls" class="row button-row" hidden>
+            <button id="queuePauseButton" class="primary" type="button">Pause</button>
+            <button id="queueResumeButton" class="primary" type="button" hidden>Resume</button>
+            <button id="queueSkipButton" class="secondary" type="button">Skip</button>
+            <button id="queueStopButton" class="danger queue-stop" type="button">Stop queue</button>
+          </div>
+          <p id="queueControlHint" class="hint"></p>
+          <p id="queueActionStatus" role="status" aria-live="polite"></p>
+          <button id="queueRetryButton" class="secondary" type="button" hidden>Result unknown — Retry</button>
+          <h3>Up next</h3>
+          <ol id="queueUpcoming" class="queue-upcoming"></ol>
+          <div id="queuePreviewAttribution" class="preview-attribution" hidden>
+            <a id="queuePreviewStoreLink" target="_blank" rel="noopener noreferrer"><img src="itunes-badge.svg" width="140" height="41" alt="Get it on iTunes" /></a>
+            <small>Provided courtesy of iTunes</small>
+          </div>
+          <p id="queueEmpty" class="hint">No upcoming entries.</p>
+          <p id="queueTerminalHint" class="hint">Browse Songs and choose a saved Song List to start a new queue.</p>
+        </div>
+        <button id="queueAddSongsButton" class="primary queue-add-songs" type="button" hidden>+ Add songs</button>
+      </section>
+      <aside id="queuePicker" class="queue-picker" hidden aria-labelledby="queuePickerTitle" tabindex="-1">
+        <header class="queue-picker-header">
+          <div class="row"><h2 id="queuePickerTitle" tabindex="-1">Add songs</h2><button id="queuePickerDone" class="secondary" type="button">Done</button></div>
+          <label for="queuePickerSearch">Search songs</label>
+          <input id="queuePickerSearch" type="search" placeholder="Search all columns" />
+          <label for="queuePickerList">Filter by Song List</label>
+          <select id="queuePickerList"><option value="">All songs</option></select>
+          <p class="hint">Adds affect this session only. Add again for an intentional repeat.</p>
+          <p id="queuePickerSummary" class="hint"></p>
+          <p id="queuePickerFeedback" role="status" aria-live="polite"></p>
+          <button id="queuePickerRetry" class="secondary" type="button" hidden>Result unknown — Retry Add</button>
+        </header>
+        <div id="queuePickerScroller" class="song-table-wrapper queue-picker-scroller">
+          <table id="queuePickerTable"><thead class="visually-hidden"><tr><th>Title</th><th>Artist</th><th>Album</th><th>Origin</th><th>Shortname</th><th>Action</th></tr></thead><tbody id="queuePickerBody"></tbody></table>
+        </div>
+        <div id="queuePickerAttribution" class="preview-attribution" hidden>
+          <a id="queuePickerStoreLink" target="_blank" rel="noopener noreferrer"><img src="itunes-badge.svg" width="140" height="41" alt="Get it on iTunes" /></a>
+          <small>Provided courtesy of iTunes</small>
+        </div>
+      </aside>
+    </section>
 
     <section id="songsPage">
       <section class="panel control-panel">
@@ -37,6 +105,10 @@
               <button id="editListButton" class="secondary" disabled>Edit ✏️</button>
               <button id="deleteListButton" class="danger" disabled>Delete 🗑️</button>
             </div>
+          </div>
+          <div class="queue-start">
+            <button id="startQueueButton" class="primary" type="button" disabled>Start queue</button>
+            <p id="queueStartHint" class="hint">Choose a saved Song List. Search filters are ignored.</p>
           </div>
         </div>
       </section>
@@ -73,6 +145,7 @@
               <button id="exportCsvButton" class="secondary hidden" title="Export visible grid to CSV">Export CSV ⬇️</button>
             </div>
           </div>
+          <p id="queueManualHint" class="hint" hidden></p>
           <div class="sort-buttons hidden" id="sortButtons"></div>
           <div class="song-table-wrapper" id="songTableWrapper">
             <table id="songsTable">
@@ -158,6 +231,29 @@
             Show export to CSV button
           </label>
         </div>
+        <div class="panel-body config-grid queue-settings">
+          <div class="panel-subtitle">Automatic queue</div>
+          <label class="toggle-checkbox"><input id="pauseAfterAttempt" type="checkbox" disabled /> Pause after each song attempt</label>
+          <p class="hint">Off by default. When enabled, pause after every expected attempt: finish, quit, or failure. Resume continues to the next entry, not a replay. Changes apply to attempts starting after the save.</p>
+          <p id="queuePreferenceStatus" class="hint" role="status"></p>
+          <h3>Console event observations</h3>
+          <p id="queueDiagnostics" class="hint"></p>
+          <section id="queueStorageRecoverySection" hidden aria-labelledby="queueStorageRecoveryTitle">
+            <h3 id="queueStorageRecoveryTitle">Queue storage failure</h3>
+            <p class="hint">Restore database/filesystem availability, then reconcile retained results and gameplay boundaries without sending console requests again. Recovery leaves the queue paused; a new song-selection observation and explicit Resume are required. Unresolved console requests remain quarantined.</p>
+            <button id="queueReconcileStorageButton" class="secondary" type="button">Reconcile queue storage</button>
+          </section>
+          <p id="queueStorageRecoveryStatus" class="hint" role="status" tabindex="-1"></p>
+          <section id="queueRecoverySection" hidden aria-labelledby="queueRecoveryTitle">
+            <h3 id="queueRecoveryTitle">Unresolved transmitted console request</h3>
+            <p class="hint">Only if its response cannot resolve the request: actually restart the game/console first. This confirmation does not restart it remotely. It clears only the displayed request, resets observations and leaves the queue paused. A new song-selection observation and explicit Resume are required.</p>
+            <p id="queueRecoveryOperation" class="hint"></p>
+            <button id="queueConfirmRestartButton" class="danger" type="button">Confirm console restarted</button>
+          </section>
+          <p id="queueRecoveryStatus" class="hint" role="status"></p>
+          <p id="queueAdminActionStatus" class="hint" role="status"></p>
+          <button id="queueAdminRetryButton" class="secondary" type="button" hidden>Result unknown — Retry queue action</button>
+        </div>
         <div class="panel-body config-grid preview-settings">
           <div class="panel-subtitle">Song previews</div>
           <p class="hint">Optional iTunes previews require internet. Confirm Apple's terms permit your use before enabling.
@@ -213,6 +309,9 @@
   </div>
   <script src="virtual-list.js"></script>
   <script src="preview-player.js"></script>
+  <script src="session-queue.js"></script>
+  <script src="queue-picker.js"></script>
+  <script src="queue-previews.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

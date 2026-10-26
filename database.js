@@ -34,6 +34,18 @@ class Database {
       FOREIGN KEY(shortname) REFERENCES songs(shortname) ON DELETE CASCADE
     )`);
     await this.rawRun('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)');
+    // Queue snapshots deliberately have no saved-list/song foreign keys: source
+    // deletion and library refresh must not erase a live session or reservation.
+    await this.rawRun(`CREATE TABLE IF NOT EXISTS queue_snapshot (
+      id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL,
+      session_json TEXT, operation_json TEXT
+    )`);
+    await this.rawRun('INSERT OR IGNORE INTO queue_snapshot (id, version) VALUES (1, 0)');
+    await this.rawRun(`CREATE TABLE IF NOT EXISTS queue_command_receipts (
+      command_id TEXT PRIMARY KEY, request_json TEXT NOT NULL,
+      response_json TEXT NOT NULL, created_at INTEGER NOT NULL
+    )`);
+    await this.rawRun('CREATE INDEX IF NOT EXISTS queue_receipts_created ON queue_command_receipts(created_at)');
   }
 
   // All connection access shares this queue. Calls inside a transaction inherit its

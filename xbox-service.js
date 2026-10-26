@@ -3,6 +3,10 @@ class XboxService {
     this.configStore = configStore;
   }
 
+  selectSong(shortname) {
+    return this.fetch(`/jump?shortname=${encodeURIComponent(shortname)}`);
+  }
+
   async fetch(path) {
     const config = this.configStore.load();
     const url = `http://${config.xboxIp}:${config.xboxPort}${path}`;
@@ -14,10 +18,12 @@ class XboxService {
       });
 
       if (!response.ok) {
-        throw new Error(`Xbox HTTP server returned ${response.status} ${response.statusText}`);
+        const error = new Error(`Xbox HTTP server returned ${response.status} ${response.statusText}`);
+        error.transportReturned = true;
+        throw error;
       }
 
-      return response.text();
+      return await response.text();
     } catch (error) {
       if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
         throw new Error(`Cannot connect to Xbox at ${config.xboxIp}:${config.xboxPort} - make sure the Xbox is running Rock Band 3 Enhanced with HTTP server enabled`);

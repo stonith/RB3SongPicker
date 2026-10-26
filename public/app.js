@@ -1,5 +1,9 @@
 const state = {
   currentPage: 'songs',
+  queueViewChosen: false,
+  queueJoined: false,
+  queueSeedCount: null,
+  queueSeedRequestId: 0,
   songs: [],
   songLists: [],
   selectedListId: '',
@@ -91,16 +95,497 @@ const elements = {
   managementActions: document.getElementById('managementActions'),
   pageButtons: {
     songs: document.getElementById('songsPageButton'),
+    queue: document.getElementById('queuePageButton'),
     admin: document.getElementById('adminPageButton')
   },
   pages: {
     songs: document.getElementById('songsPage'),
+    queue: document.getElementById('queuePage'),
     admin: document.getElementById('adminPage')
   },
   tableHeaders: Array.from(document.querySelectorAll('th.sortable'))
 };
 
 const previewPlayer = new PreviewPlayer(elements.previewAudio, renderPreviewState);
+const queueElements = Object.fromEntries([
+  'queuePage', 'queueSource', 'queueStatus', 'queueSyncStatus', 'queueWarning', 'queueProgress',
+  'queueCurrent', 'queueCurrentTitle', 'queueCurrentArtist', 'queueCurrentLabel', 'queueControls',
+  'queuePauseButton', 'queueResumeButton', 'queueSkipButton', 'queueStopButton', 'queueControlHint',
+  'queueActionStatus', 'queueRetryButton', 'queueUpcoming', 'queueEmpty', 'queueTerminalHint', 'queuePreviewAttribution', 'queuePreviewStoreLink',
+  'queueCompactStatus', 'queueCompactText', 'openQueueButton', 'startQueueButton', 'queueStartHint', 'queueManualHint',
+  'queueAddSongsButton', 'queuePicker', 'queuePickerTitle', 'queuePickerDone', 'queuePickerSearch', 'queuePickerList', 'queuePickerSummary',
+  'queuePickerFeedback', 'queuePickerRetry', 'queuePickerScroller', 'queuePickerBody', 'queuePickerAttribution', 'queuePickerStoreLink',
+  'pauseAfterAttempt', 'queuePreferenceStatus', 'queueDiagnostics', 'queueRecoverySection', 'queueRecoveryOperation',
+  'queueRecoveryAdminButton', 'queueConfirmRestartButton', 'queueRecoveryStatus', 'queueAdminActionStatus', 'queueAdminRetryButton',
+  'queueStorageRecoverySection', 'queueReconcileStorageButton', 'queueStorageRecoveryStatus'
+].map(id => [id, document.getElementById(id)]));
+let queueStorageRecovering = false;
+const queueClient = new SessionQueue.QueueClient({ onChange: renderQueue });
+const queuePicker = new QueuePicker.PickerModel({ client: queueClient, onChange: renderQueuePicker });
+let pickerOpen = false;
+let pickerReturnFocus;
+let pickerWindowScroll = 0;
+let pickerSearchTimer;
+let pickerPreviewTimer;
+let pickerRange = { start: -1, end: -1 };
+let pickerSongs = null;
+let queuePreferenceRequestId = 0;
+let queuePreferenceSaving = false;
+let queuePreviewTimer;
+const queuePreviewCache = new QueuePreviews.QueuePreviewCache({ onChange: renderQueuePreviews });
+
+function scheduleQueuePreviewLookup() {
+  if (!state.previewEnabled || queuePreviewTimer) return;
+  queuePreviewTimer = setTimeout(() => {
+    queuePreviewTimer = null;
+    queuePreviewCache.refresh(QueuePreviews.queuePreviewSongs(queueClient.snapshot)).catch(() => {
+      // Cached preview availability must never block shared queue actions.
+    });
+  }, 100);
+}
+
+function renderQueuePreviews() {
+  const model = SessionQueue.describeQueue(queueClient.snapshot);
+  const entries = new Map(model.upcoming.map(song => [song.id, song]));
+  const rows = [[queueElements.queueCurrent, model.current], ...Array.from(queueElements.queueUpcoming.children)
+    .map(row => [row, entries.get(row.dataset.entryId)])];
+  for (const [row, song] of rows) {
+    let button = row.querySelector?.('.queue-preview-button');
+    if (!song || !state.previewEnabled) {
+      if (button) button.hidden = true;
+      row.classList.remove('preview-active'); row.classList.remove('preview-last');
+      continue;
+    }
+    row.dataset.shortname = song.shortname;
+    if (!button) {
+      button = document.createElement('button'); button.type = 'button';
+      button.className = 'small-button secondary queue-preview-button';
+      button.addEventListener('click', () => {
+        const current = QueuePreviews.queuePreviewSongs(queueClient.snapshot).find(item => item.shortname === row.dataset.shortname);
+        const preview = queuePreviewCache.get(row.dataset.shortname);
+        if (current && preview?.status === 'matched') previewPlayer.play({ ...current, preview });
+      });
+      (row.querySelector('.queue-entry-controls') || row).append(button);
+    }
+    const preview = queuePreviewCache.get(song.shortname);
+    const available = preview?.status === 'matched';
+    const selected = previewPlayer.state.song?.shortname === song.shortname;
+    const stoppable = selected && ['loading', 'playing'].includes(previewPlayer.state.status);
+    button.hidden = false; button.disabled = !available;
+    queueText(button, available ? stoppable ? 'Stop' : 'Preview' : ['unavailable', 'ambiguous'].includes(preview?.status) ? 'No clip' : 'Queued');
+    button.title = available ? `${stoppable ? 'Stop preview of' : 'Preview'} ${song.title || song.shortname}`
+      : button.textContent === 'No clip' ? 'No confident preview match available' : 'Preview matching is pending';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', String(Boolean(stoppable)));
+    row.classList.toggle('preview-active', selected && ['loading', 'playing', 'paused'].includes(previewPlayer.state.status));
+    row.classList.toggle('preview-last', selected && !['loading', 'playing', 'paused'].includes(previewPlayer.state.status));
+  }
+}
+
+function queueText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function manualSelectionReason() {
+  if (queueClient.pendingCommand?.type === 'start') return 'Queue Start is pending or its result is unknown. Resolve it with Retry before manual selection.';
+  if (!queueClient.synchronized) return 'Shared queue synchronization is unavailable. Pick and Random are disabled until resynchronized.';
+  return SessionQueue.describeQueue(queueClient.snapshot, queueClient.diagnostics).manualBlocked;
+}
+
+function updateManualSelection() {
+  const reason = manualSelectionReason();
+  queueElements.queueManualHint.hidden = !reason;
+  queueText(queueElements.queueManualHint, reason);
+  for (const button of [elements.randomButton, elements.randomMenuButton, elements.randomPopularButton,
+    elements.randomUnpopularButton, ...elements.songsTableBody.querySelectorAll('[data-manual-pick]')]) {
+    button.disabled = !!reason;
+    button.title = reason;
+  }
+  if (reason) closeRandomMenu();
+}
+
+function renderQueueStart() {
+  const list = state.songLists.find(item => String(item.id) === state.selectedListId);
+  const details = SessionQueue.startQueueDetails(list, state.queueSeedCount);
+  const active = SessionQueue.describeQueue(queueClient.snapshot).active;
+  queueElements.startQueueButton.disabled = !details.enabled || !queueClient.canCommand || active || !!state.editingList;
+  queueText(queueElements.startQueueButton, details.enabled ? `Start queue (${details.count})` : 'Start queue');
+  queueText(queueElements.queueStartHint, active ? 'Stop the current queue before starting another. Saved-list edits do not change this session.'
+    : state.editingList ? 'Save or cancel saved-list editing before starting a queue.' : details.text);
+}
+
+async function loadQueueSeedCount() {
+  const requestId = ++state.queueSeedRequestId;
+  state.queueSeedCount = null;
+  renderQueueStart();
+  if (!state.selectedListId) return;
+  try {
+    const data = await apiFetch(`/api/songs?listId=${encodeURIComponent(state.selectedListId)}`);
+    if (requestId !== state.queueSeedRequestId) return;
+    state.queueSeedCount = data.songs.length;
+    renderQueueStart();
+  } catch {
+    if (requestId === state.queueSeedRequestId) queueText(queueElements.queueStartHint, 'Cannot check full-list membership. Select the list again to retry.');
+  }
+}
+
+function renderQueue() {
+  const snapshot = queueClient.snapshot;
+  const session = snapshot?.session;
+  const model = SessionQueue.describeQueue(snapshot, queueClient.diagnostics);
+  if (snapshot && queueClient.synchronized && !state.queueJoined) {
+    state.queueJoined = true;
+    if (model.active && !state.queueViewChosen) setPage('queue', true);
+  }
+  queueText(queueElements.queueSource, session ? `From ${session.sourceList.name} · independent session queue` : 'Start from a saved Song List in Songs.');
+  queueText(queueElements.queueStatus, model.label);
+  queueText(queueElements.queueSyncStatus, queueClient.synchronized
+    ? 'Shared queue is up to date. Execution continues with this browser closed.'
+    : 'Shared queue synchronization unavailable. Controls disabled; reconnecting…');
+  queueElements.queueWarning.hidden = !model.warning;
+  queueText(queueElements.queueWarning, model.warning);
+  queueText(queueElements.queueProgress, session ? model.progress : '');
+  queueElements.queueCurrent.hidden = !model.current;
+  if (model.current) {
+    queueText(queueElements.queueCurrentLabel, session.currentAttempt ? 'Playing attempt · Locked' : 'Current · Locked');
+    queueText(queueElements.queueCurrentTitle, model.current.title || model.current.shortname);
+    queueText(queueElements.queueCurrentArtist, model.current.artist || '—');
+  }
+  queueElements.queueControls.hidden = !model.active;
+  queueElements.queuePauseButton.hidden = session?.status !== 'running';
+  queueElements.queueResumeButton.hidden = session?.status !== 'paused';
+  for (const button of [queueElements.queuePauseButton, queueElements.queueResumeButton, queueElements.queueSkipButton, queueElements.queueStopButton]) button.disabled = !queueClient.canCommand;
+  queueElements.queueResumeButton.disabled ||= !!model.resumeBlocked;
+  queueElements.queueResumeButton.title = model.resumeBlocked || 'Resume retains pending entries and waits for song selection.';
+  queueElements.queueSkipButton.disabled ||= !session?.entries.some(entry => entry.status === 'pending');
+  queueText(queueElements.queueSkipButton, session?.currentAttempt?.skipRequested ? 'Skip after attempt' : 'Skip');
+  queueText(queueElements.queueControlHint, model.active ? model.resumeBlocked || (session?.currentAttempt
+    ? 'Pause and Stop do not interrupt gameplay. Skip takes effect at the attempt boundary.'
+    : 'Resume waits for observed song selection. Players start gameplay.') : '');
+  queueElements.queueRetryButton.hidden = !queueClient.pendingCommand || queueClient.busy;
+  queueElements.queueRetryButton.disabled = !queueClient.synchronized || queueClient.busy;
+  queueElements.queueAdminRetryButton.hidden = !queueClient.pendingCommand || queueClient.busy;
+  queueElements.queueAdminRetryButton.disabled = !queueClient.synchronized || queueClient.busy;
+  queueText(queueElements.queueAdminActionStatus, queueClient.pendingCommand ? queueClient.busy ? 'Applying shared queue action…' : 'Result unknown — Retry the original queue action before another command.' : '');
+  // Keep nodes keyed by independent entry ID. Remote status packets never replace
+  // the workspace or browser rows, preserving focus and scroll for participants.
+  const focusedEntry = document.activeElement?.closest?.('#queueUpcoming li');
+  const focusedControl = document.activeElement;
+  const existing = new Map(Array.from(queueElements.queueUpcoming.children).map(row => [row.dataset.entryId, row]));
+  model.upcoming.forEach((entry, index) => {
+    let row = existing.get(entry.id);
+    if (!row) {
+      row = document.createElement('li'); row.dataset.entryId = entry.id; row.tabIndex = -1;
+      const title = document.createElement('strong');
+      const artist = document.createElement('span'); artist.className = 'hint';
+      const controls = document.createElement('div'); controls.className = 'queue-entry-controls';
+      for (const [icon, label, action] of [['↑', 'Move up', () => moveQueueEntry(entry.id, -1)], ['↓', 'Move down', () => moveQueueEntry(entry.id, 1)], ['−', 'Remove', () => removeQueueEntry(entry.id)]]) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'small-button secondary';
+        button.textContent = icon; button.title = label; button.setAttribute('aria-label', `${label}: ${entry.title || entry.shortname}`);
+        button.addEventListener('click', action); controls.append(button);
+      }
+      row.append(title, artist, controls);
+    }
+    queueText(row.children[0], entry.title || entry.shortname);
+    queueText(row.children[1], entry.artist || '—');
+    const buttons = row.children[2].children;
+    buttons[0].disabled = !model.active || !queueClient.canCommand || index === 0;
+    buttons[1].disabled = !model.active || !queueClient.canCommand || index === model.upcoming.length - 1;
+    buttons[2].disabled = !model.active || !queueClient.canCommand;
+    if (queueElements.queueUpcoming.children[index] !== row) queueElements.queueUpcoming.insertBefore(row, queueElements.queueUpcoming.children[index] || null);
+    existing.delete(entry.id);
+  });
+  for (const row of existing.values()) row.remove();
+  if (focusedEntry && document.activeElement === document.body) {
+    if (focusedControl.isConnected && !focusedControl.disabled) focusedControl.focus({ preventScroll: true });
+    else if (focusedEntry.isConnected) focusedEntry.focus({ preventScroll: true });
+    else queueElements.queueStatus.focus({ preventScroll: true });
+  }
+  queueElements.queueEmpty.hidden = model.upcoming.length > 0;
+  queueText(queueElements.queueEmpty, model.active ? 'No upcoming entries. Current gameplay or an unresolved request must finish before queue completion.' : 'No upcoming entries.');
+  queueElements.queueTerminalHint.hidden = model.active;
+  queueElements.queueCompactStatus.classList.toggle('hidden', state.currentPage === 'queue' || (!session && !snapshot?.operation));
+  queueText(queueElements.queueCompactText, `${session?.sourceList.name || 'Console request'} · ${model.label}`);
+  queueText(elements.pageButtons.queue, `Queue${model.active ? ` (${session.entries.filter(entry => entry.status === 'pending').length})` : ''}`);
+  queueElements.queueAddSongsButton.hidden = !model.active;
+  queueElements.queueAddSongsButton.disabled = !queueClient.synchronized;
+  const operationId = SessionQueue.recoveryOperationId(snapshot);
+  queueElements.queueRecoveryAdminButton.hidden = !operationId && !queueClient.diagnostics.inhibited;
+  queueElements.queueStorageRecoverySection.hidden = !queueClient.diagnostics.inhibited;
+  queueElements.queueReconcileStorageButton.disabled = queueStorageRecovering;
+  queueElements.queueRecoverySection.hidden = !operationId;
+  queueElements.queueConfirmRestartButton.dataset.operationId = operationId || '';
+  queueElements.queueConfirmRestartButton.disabled = !queueClient.canCommand || !!queueClient.diagnostics.inhibited;
+  queueText(queueElements.queueRecoveryOperation, operationId ? `Unresolved request: ${operationId}` : '');
+  queueText(queueElements.queueDiagnostics, SessionQueue.describeDiagnostics(queueClient.diagnostics));
+  renderQueueStart();
+  updateManualSelection();
+  renderQueuePreviews();
+  scheduleQueuePreviewLookup();
+  renderQueuePicker();
+}
+
+async function runQueueAction(type, fields = {}, retry = false) {
+  if (type === 'stop' && queueClient.snapshot?.operation && !confirm('Stop prevents future selections, but an already-sent console request cannot be withdrawn. Stop the queue?')) return;
+  if (type === 'start' || type === 'resume') previewPlayer.stop();
+  queueText(queueElements.queueActionStatus, 'Applying queue action…');
+  try {
+    await (retry ? queueClient.retry() : queueClient.command(type, fields));
+    queueText(queueElements.queueActionStatus, type === 'start' ? 'Queue started from the full saved list.' : 'Queue action accepted.');
+    if (type === 'start') setPage('queue', true);
+    return true;
+  } catch (error) {
+    queueText(queueElements.queueActionStatus, error.unknown ? 'Result unknown — Retry uses the original action identity and cannot duplicate it.'
+      : `Action not applied: ${error.message} Shared state is current; review it before trying again.`);
+  }
+  renderQueue();
+}
+
+async function moveQueueEntry(entryId, direction) {
+  const row = Array.from(queueElements.queueUpcoming.children).find(node => node.dataset.entryId === entryId);
+  const hadFocus = row?.contains?.(document.activeElement);
+  const controlIndex = hadFocus ? Array.from(row.children[2].children).indexOf(document.activeElement) : -1;
+  try {
+    const entryIds = SessionQueue.moveEntryOrder(queueClient.snapshot, entryId, direction);
+    await runQueueAction('reorder', { entryIds });
+  } catch (error) { queueText(queueElements.queueActionStatus, `Move not applied: ${error.message}`); }
+  if (hadFocus && (document.activeElement === document.body || document.activeElement === row)) {
+    const currentRow = Array.from(queueElements.queueUpcoming.children).find(node => node.dataset.entryId === entryId);
+    const preferred = currentRow?.children[2].children[controlIndex];
+    const target = preferred && !preferred.disabled ? preferred : currentRow?.querySelector('button:not(:disabled)');
+    (target || queueElements.queueStatus).focus({ preventScroll: true });
+  }
+}
+
+async function removeQueueEntry(entryId) {
+  const row = Array.from(queueElements.queueUpcoming.children).find(node => node.dataset.entryId === entryId);
+  const hadFocus = row?.contains(document.activeElement);
+  const index = row ? Array.from(queueElements.queueUpcoming.children).indexOf(row) : -1;
+  if (await runQueueAction('remove', { entryId })) {
+    if (hadFocus && (document.activeElement === document.body || document.activeElement === queueElements.queueStatus)) {
+      const next = queueElements.queueUpcoming.children[Math.max(0, index - 1)];
+      (next?.querySelector('button:not(:disabled)') || (queueElements.queueAddSongsButton.hidden ? queueElements.queueStatus : queueElements.queueAddSongsButton)).focus({ preventScroll: true });
+    }
+  }
+}
+
+function retryQueueAction() {
+  if (queueClient.pendingCommand?.type === 'add') return queuePicker.retry();
+  return runQueueAction(queueClient.pendingCommand?.type, {}, true);
+}
+
+async function loadQueuePreferences() {
+  if (queuePreferenceSaving) return;
+  const requestId = ++queuePreferenceRequestId;
+  queueElements.pauseAfterAttempt.disabled = true;
+  try {
+    const data = await apiFetch('/api/queue/preferences');
+    if (requestId !== queuePreferenceRequestId) return;
+    queueElements.pauseAfterAttempt.checked = data.pauseAfterAttempt === true;
+    queueElements.pauseAfterAttempt.disabled = false;
+    queueText(queueElements.queuePreferenceStatus, 'Policy applies at the start of each attempt.');
+  } catch (error) {
+    if (requestId === queuePreferenceRequestId) queueText(queueElements.queuePreferenceStatus, `Cannot load queue preference: ${error.message}. Reopen Admin to retry.`);
+  }
+}
+
+async function saveQueuePreferences() {
+  ++queuePreferenceRequestId;
+  queuePreferenceSaving = true;
+  queueElements.pauseAfterAttempt.disabled = true;
+  try {
+    const data = await apiFetch('/api/queue/preferences', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pauseAfterAttempt: queueElements.pauseAfterAttempt.checked }) });
+    queueElements.pauseAfterAttempt.checked = data.pauseAfterAttempt === true;
+    queueText(queueElements.queuePreferenceStatus, 'Queue preference saved. Current attempts keep their original policy.');
+  } catch (error) {
+    queueText(queueElements.queuePreferenceStatus, `Save result unknown: ${error.message}. Reopen Admin to check the saved policy.`);
+    return;
+  } finally { queuePreferenceSaving = false; }
+  queueElements.pauseAfterAttempt.disabled = false;
+}
+
+async function reconcileQueueStorage() {
+  if (queueStorageRecovering) return;
+  const hadFocus = document.activeElement === queueElements.queueReconcileStorageButton;
+  queueStorageRecovering = true;
+  queueText(queueElements.queueStorageRecoveryStatus, 'Reconciling retained queue state…');
+  renderQueue();
+  try {
+    const response = await fetch('/api/queue/storage/reconcile', { method: 'POST' });
+    const body = await response.json();
+    if (body.diagnostics) queueClient.diagnostics = body.diagnostics;
+    if (body.snapshot) queueClient.accept(body.snapshot);
+    if (!response.ok) throw new Error(body.error || 'Storage remains unavailable.');
+    queueText(queueElements.queueStorageRecoveryStatus, 'Storage reconciled. Queue remains paused; wait for a new song-selection observation and explicitly Resume. Any unresolved console request remains quarantined.');
+  } catch (error) {
+    queueText(queueElements.queueStorageRecoveryStatus, `Storage recovery not confirmed: ${error.message}. Restore storage and try Reconcile queue storage again; no console request is resent.`);
+  } finally {
+    queueStorageRecovering = false;
+    renderQueue();
+    if (hadFocus && (document.activeElement === document.body || document.activeElement === queueElements.queueReconcileStorageButton)) {
+      (queueElements.queueStorageRecoverySection.hidden ? queueElements.queueStorageRecoveryStatus : queueElements.queueReconcileStorageButton).focus({ preventScroll: true });
+    }
+  }
+}
+
+async function confirmConsoleRestarted() {
+  const operationId = queueElements.queueConfirmRestartButton.dataset.operationId;
+  if (!operationId || !queueClient.canCommand) return;
+  if (!confirm('Have you actually restarted the game/console? This action does not restart it remotely. It clears only this unresolved request and leaves the queue paused awaiting new observations and explicit Resume.')) return;
+  const accepted = await runQueueAction('confirm-console-restarted', { operationId });
+  queueText(queueElements.queueRecoveryStatus, accepted ? 'Restart confirmed. Queue remains paused; wait for a new song-selection observation and explicitly Resume.' : queueElements.queueActionStatus.textContent);
+}
+
+async function addPickerSong(song) {
+  const focused = document.activeElement?.dataset.queueAdd === song.shortname;
+  await (queuePicker.rowState(song.shortname).retry ? queuePicker.retry() : queuePicker.add(song));
+  // Disabling a pending Add blurs it in browsers. Restore only local action
+  // focus, never a participant's newer choice or a remote mutation's focus.
+  if (focused && pickerOpen && (document.activeElement === document.body || document.activeElement?.dataset.queueAdd === song.shortname)) {
+    const button = Array.from(queueElements.queuePickerBody.querySelectorAll('[data-queue-add]')).find(node => node.dataset.queueAdd === song.shortname);
+    if (button && !button.disabled) button.focus({ preventScroll: true });
+  }
+}
+
+function updatePickerAddButton(button) {
+  const shortname = button.dataset.queueAdd;
+  const model = queuePicker.rowState(shortname);
+  queueText(button, model.label);
+  button.disabled = model.disabled;
+  const song = queuePicker.songs.find(item => item.shortname === shortname);
+  button.setAttribute('aria-label', `${model.label}: ${song?.title || shortname}`);
+  button.title = model.disabled ? 'Add requires an active synchronized queue with no unresolved action.' : 'Add an independent entry to this session only';
+}
+
+function openQueuePicker() {
+  if (!SessionQueue.describeQueue(queueClient.snapshot).active) return;
+  pickerReturnFocus = document.activeElement;
+  pickerWindowScroll = window.scrollY;
+  pickerOpen = true;
+  queueElements.queuePicker.hidden = false;
+  queueElements.queuePage.classList.add('picker-open');
+  const options = [new Option('All songs', ''), ...state.songLists.map(list => new Option(list.name, String(list.id)))];
+  queueElements.queuePickerList.replaceChildren(...options);
+  queueElements.queuePickerList.value = queuePicker.filters.listId;
+  if (!queueElements.queuePickerList.value) queuePicker.filters.listId = '';
+  queueElements.queuePickerSearch.value = queuePicker.filters.search;
+  updatePickerLayout();
+  pickerRange.start = -1;
+  renderQueuePicker();
+  queueElements.queuePickerTitle.focus({ preventScroll: true });
+  loadQueuePickerSongs();
+}
+
+function closeQueuePicker(restoreFocus = true) {
+  clearTimeout(pickerSearchTimer);
+  queuePicker.filters = { search: queueElements.queuePickerSearch.value, listId: queueElements.queuePickerList.value };
+  pickerOpen = false;
+  queueElements.queuePicker.hidden = true;
+  queueElements.queuePage.classList.remove('picker-open');
+  updatePickerLayout();
+  if (restoreFocus) {
+    window.scrollTo(0, pickerWindowScroll);
+    (pickerReturnFocus?.isConnected && !pickerReturnFocus.disabled && !pickerReturnFocus.hidden ? pickerReturnFocus : elements.pageButtons.queue).focus({ preventScroll: true });
+  }
+}
+
+function updatePickerLayout() {
+  const wasModal = queueElements.queuePicker.getAttribute('aria-modal') === 'true';
+  const modal = pickerOpen && !window.matchMedia('(min-width: 1120px)').matches;
+  queueElements.queuePicker.setAttribute('role', modal ? 'dialog' : 'region');
+  if (modal) queueElements.queuePicker.setAttribute('aria-modal', 'true');
+  else queueElements.queuePicker.removeAttribute('aria-modal');
+  document.body.classList.toggle('queue-picker-modal', modal);
+  if (pickerOpen) {
+    const viewport = window.visualViewport;
+    const height = modal ? viewport?.height || window.innerHeight
+      : window.innerHeight - Math.max(16, queueElements.queuePicker.getBoundingClientRect().top) - 16;
+    queueElements.queuePicker.style.height = `${Math.max(0, height)}px`;
+    queueElements.queuePicker.style.top = modal ? `${viewport?.offsetTop || 0}px` : '';
+  } else {
+    queueElements.queuePicker.style.height = '';
+    queueElements.queuePicker.style.top = '';
+  }
+  for (const node of document.querySelectorAll('.app-shell > :not(#queuePage), .queue-workspace')) node.inert = modal;
+  if (modal && !wasModal && !queueElements.queuePicker.contains(document.activeElement)) queueElements.queuePickerTitle.focus({ preventScroll: true });
+}
+
+function handlePickerKeydown(event) {
+  if (event.key === 'Escape') { event.preventDefault(); closeQueuePicker(); return; }
+  if (event.key !== 'Tab' || queueElements.queuePicker.getAttribute('aria-modal') !== 'true') return;
+  const controls = Array.from(queueElements.queuePicker.querySelectorAll('button:not(:disabled), input, select, a[href]')).filter(node => !node.hidden && node.getClientRects().length);
+  const first = controls[0]; const last = controls.at(-1);
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === queueElements.queuePicker || document.activeElement === queueElements.queuePickerTitle)) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+}
+
+async function loadQueuePickerSongs() {
+  queueElements.queuePickerScroller.scrollTop = 0;
+  await queuePicker.load({ search: queueElements.queuePickerSearch.value, listId: queueElements.queuePickerList.value });
+  schedulePickerPreviewLookup();
+}
+
+function renderQueuePicker() {
+  if (!pickerOpen) return;
+  const model = SessionQueue.describeQueue(queueClient.snapshot);
+  queueText(queueElements.queuePickerSummary, !model.active ? 'Queue ended. Done returns to the queue; start a saved list to add again.'
+    : queuePicker.loading ? 'Loading songs…' : queuePicker.loadError || `${queuePicker.songs.length} song${queuePicker.songs.length === 1 ? '' : 's'} · additions never select on the console`);
+  queueText(queueElements.queuePickerFeedback, queuePicker.feedback);
+  const retry = queueClient.pendingCommand?.type === 'add';
+  queueElements.queuePickerRetry.hidden = !retry || queueClient.busy;
+  queueElements.queuePickerRetry.disabled = !queueClient.synchronized || queueClient.busy;
+  const scroller = queueElements.queuePickerScroller;
+  const rowHeight = Number.parseFloat(getComputedStyle(scroller).getPropertyValue('--song-row-height')) || 100;
+  const range = VirtualList.calculateRange({ itemCount: queuePicker.songs.length, scrollTop: scroller.scrollTop,
+    viewportHeight: scroller.clientHeight, rowHeight, overscan: VIRTUAL_OVERSCAN });
+  if (pickerSongs !== queuePicker.songs || range.start !== pickerRange.start || range.end !== pickerRange.end) {
+    const active = document.activeElement;
+    const focusedSong = active?.dataset.queueAdd || active?.dataset.previewShortname;
+    const previewFocused = !!active?.dataset.previewShortname;
+    const fragment = document.createDocumentFragment();
+    if (range.start) fragment.append(createSpacerRow(range.start * rowHeight));
+    for (let index = range.start; index < range.end; index++) fragment.append(createSongRow(queuePicker.songs[index], null, false, true));
+    if (range.end < queuePicker.songs.length) fragment.append(createSpacerRow((queuePicker.songs.length - range.end) * rowHeight));
+    queueElements.queuePickerBody.replaceChildren(fragment);
+    pickerRange = range; pickerSongs = queuePicker.songs;
+    if (focusedSong) {
+      const selector = previewFocused ? '[data-preview-shortname]' : '[data-queue-add]';
+      const replacement = Array.from(queueElements.queuePickerBody.querySelectorAll(selector)).find(button => (button.dataset.queueAdd || button.dataset.previewShortname) === focusedSong);
+      if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
+    }
+  }
+  for (const button of queueElements.queuePickerBody.querySelectorAll('[data-queue-add]')) updatePickerAddButton(button);
+  renderPreviewState(previewPlayer.state);
+}
+
+function schedulePickerPreviewLookup() {
+  clearTimeout(pickerPreviewTimer);
+  if (pickerOpen && state.previewEnabled) pickerPreviewTimer = setTimeout(refreshPickerPreviews, 200);
+}
+
+async function refreshPickerPreviews() {
+  if (!pickerOpen || !state.previewEnabled || !queuePicker.songs.length) return;
+  const requestId = queuePicker.requestId;
+  const country = state.previewCountry;
+  const shortnames = queuePicker.songs.slice(pickerRange.start, pickerRange.end).map(song => song.shortname);
+  try {
+    const data = await apiFetch('/api/previews/lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shortnames }) });
+    if (requestId !== queuePicker.requestId || country !== state.previewCountry || !state.previewEnabled) return;
+    const previews = new Map(data.songs.map(song => [song.shortname, song.preview]));
+    let changed = false;
+    for (const song of queuePicker.songs) if (previews.has(song.shortname)) {
+      const preview = previews.get(song.shortname);
+      if (JSON.stringify(song.preview) !== JSON.stringify(preview)) { song.preview = preview; changed = true; }
+    }
+    if (changed) { pickerRange.start = -1; renderQueuePicker(); }
+  } catch { /* Preview availability never blocks a session Add. */ }
+}
+
+function startQueue() {
+  if (queueElements.startQueueButton.disabled) return;
+  runQueueAction('start', { listId: Number(state.selectedListId), sort: state.sortBy, order: state.sortOrder });
+}
 
 function updatePreviewRow(row, playback) {
   const selected = state.previewEnabled && playback.song?.shortname === row.dataset.shortname;
@@ -143,7 +628,16 @@ function renderPreviewState(playback) {
     elements.previewStoreLink.removeAttribute('href');
     elements.previewAnnouncement.textContent = '';
   }
-  for (const row of elements.songsTableBody.querySelectorAll('.song-row')) updatePreviewRow(row, playback);
+  queueElements.queuePreviewAttribution.hidden = !state.previewEnabled || !song;
+  if (song) queueElements.queuePreviewStoreLink.href = song.preview.storeUrl;
+  else queueElements.queuePreviewStoreLink.removeAttribute('href');
+  renderQueuePreviews();
+  queueElements.queuePickerAttribution.hidden = !state.previewEnabled || !song;
+  if (song) queueElements.queuePickerStoreLink.href = song.preview.storeUrl;
+  else queueElements.queuePickerStoreLink.removeAttribute('href');
+  for (const body of [elements.songsTableBody, queueElements.queuePickerBody]) {
+    for (const row of body.querySelectorAll('.song-row')) updatePreviewRow(row, playback);
+  }
 }
 
 async function loadPreviewStatus(syncControls = false) {
@@ -152,6 +646,8 @@ async function loadPreviewStatus(syncControls = false) {
     const changed = state.previewEnabled !== data.enabled || state.previewCountry !== data.country;
     state.previewEnabled = data.enabled;
     state.previewCountry = data.country;
+    queuePreviewCache.configure({ enabled: data.enabled, country: data.country });
+    scheduleQueuePreviewLookup();
     if (syncControls) {
       elements.enablePreviews.checked = data.enabled;
       elements.previewCountry.value = data.country;
@@ -163,8 +659,9 @@ async function loadPreviewStatus(syncControls = false) {
     elements.previewProgress.textContent = `${data.enabled ? 'Matching enabled' : 'Off / paused'} · ${counts.matched || 0} matched · ${remaining} queued · ${(counts.unavailable || 0) + (counts.ambiguous || 0)} unavailable.${cooldown}`;
     if (changed) {
       previewPlayer.clear();
-      for (const song of state.songs) song.preview = data.enabled ? { status: 'pending' } : undefined;
+      for (const song of [...state.songs, ...queuePicker.songs]) song.preview = data.enabled ? { status: 'pending' } : undefined;
       renderSongTable(false, true);
+      pickerRange.start = -1; renderQueuePicker(); schedulePickerPreviewLookup();
     }
     return true;
   } catch (error) {
@@ -215,6 +712,7 @@ async function pollPreviews() {
   if (!document.hidden) {
     await loadPreviewStatus();
     await refreshVisiblePreviews();
+    await refreshPickerPreviews();
   }
   setTimeout(pollPreviews, 10000);
 }
@@ -387,6 +885,7 @@ async function loadSongLists() {
     const data = await apiFetch('/api/songlists');
     state.songLists = data.lists || [];
     renderSongListOptions();
+    loadQueueSeedCount();
   } catch (error) {
     setStatus(`Cannot load song lists: ${error.message}`, true);
   }
@@ -456,6 +955,7 @@ function renderSongListOptions() {
     elements.listEditor.classList.add('hidden');
     state.editingList = null;
   }
+  renderQueueStart();
 }
 
 function updateDuplicateFilterButtonVisibility() {
@@ -537,7 +1037,8 @@ function exportVisibleGridToCsv() {
   setStatus(`Exported ${state.songs.length} songs to CSV.`);
 }
 
-async function loadSongs() {
+async function loadSongs(resetScroll = true) {
+  renderQueueStart();
   const requestId = ++state.songsRequestId;
   state.loading = true;
   try {
@@ -552,7 +1053,7 @@ async function loadSongs() {
     state.songs = data.songs || [];
     state.virtualStart = -1;
     state.virtualEnd = -1;
-    renderSongTable(true);
+    renderSongTable(resetScroll);
     let listMessage = '';
     if (state.editingList) {
       listMessage = ' (editing list, full library shown)';
@@ -587,7 +1088,7 @@ function createSpacerRow(height) {
   return row;
 }
 
-function createSongRow(song, editingSet, inEditMode) {
+function createSongRow(song, editingSet, inEditMode, queueAddMode = false) {
   const row = document.createElement('tr');
   row.className = 'song-row';
   row.dataset.shortname = song.shortname;
@@ -635,13 +1136,20 @@ function createSongRow(song, editingSet, inEditMode) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = inEditMode ? 'small-button secondary' : 'small-button primary';
-  if (inEditMode) {
+  if (queueAddMode) {
+    button.dataset.queueAdd = song.shortname;
+    updatePickerAddButton(button);
+    button.addEventListener('click', () => addPickerSong(song));
+  } else if (inEditMode) {
     const selected = editingSet.has(song.shortname);
     button.textContent = selected ? '−' : '+';
     button.title = selected ? 'Remove from song list' : 'Add to song list';
     button.addEventListener('click', () => toggleSongInList(song.shortname));
   } else {
     button.textContent = 'Pick';
+    button.dataset.manualPick = song.shortname;
+    button.disabled = !!manualSelectionReason();
+    button.title = manualSelectionReason();
     button.addEventListener('click', () => pickSong(song.shortname));
   }
   actionCell.append(button);
@@ -820,6 +1328,7 @@ function toggleDuplicateFilter() {
 }
 
 function pickRandom(type) {
+  if (manualSelectionReason()) { setStatus(manualSelectionReason(), true); return; }
   if (!state.songs.length) {
     setStatus('No songs available for random selection.', true);
     return;
@@ -882,6 +1391,7 @@ async function refreshLibrary() {
 }
 
 async function pickSong(shortname) {
+  if (manualSelectionReason()) { setStatus(manualSelectionReason(), true); return; }
   previewPlayer.stop();
   try {
     setStatus(`Sending pick command for ${shortname}...`);
@@ -974,19 +1484,24 @@ function cancelSongList() {
   loadSongs();
 }
 
-function setPage(page) {
+function setPage(page, automatic = false) {
+  if (pickerOpen && page !== 'queue') closeQueuePicker(false);
+  if (!automatic) state.queueViewChosen = true;
   state.currentPage = page;
   if (page !== 'admin') state.adminUnlocked = false;
   if (page !== 'songs') previewPlayer.stop();
-  elements.pages.songs.classList.toggle('hidden', page !== 'songs');
-  elements.pages.admin.classList.toggle('hidden', page !== 'admin');
-  elements.pageButtons.songs.classList.toggle('active', page === 'songs');
-  elements.pageButtons.admin.classList.toggle('active', page === 'admin');
-  elements.pageButtons.admin.style.display = page === 'songs' ? 'inline-flex' : 'none';
-  elements.pageButtons.songs.style.display = page === 'admin' ? 'inline-flex' : 'none';
+  for (const [name, element] of Object.entries(elements.pages)) {
+    element.classList.toggle('hidden', page !== name);
+    elements.pageButtons[name].classList.toggle('active', page === name);
+    elements.pageButtons[name].setAttribute('aria-current', page === name ? 'page' : 'false');
+  }
+  queueElements.queueCompactStatus.classList.toggle('hidden', page === 'queue' || (!queueClient.snapshot?.session && !queueClient.snapshot?.operation));
   if (page === 'songs') {
-    loadSongs();
+    renderSongTable(false, true);
+    schedulePreviewLookup();
+    loadSongs(false);
   } else if (page === 'admin') {
+    loadQueuePreferences();
     loadConfig();
     loadPreviewStatus(true);
     // Sync admin checkboxes with current in-memory state (set at init and kept
@@ -1000,6 +1515,34 @@ function setPage(page) {
 }
 
 function attachEvents() {
+  queueElements.startQueueButton.addEventListener('click', startQueue);
+  elements.pageButtons.queue.addEventListener('click', () => setPage('queue'));
+  queueElements.openQueueButton.addEventListener('click', () => setPage('queue'));
+  for (const type of ['pause', 'resume', 'skip', 'stop']) {
+    queueElements[`queue${type[0].toUpperCase()}${type.slice(1)}Button`].addEventListener('click', () => runQueueAction(type));
+  }
+  queueElements.queueRetryButton.addEventListener('click', retryQueueAction);
+  queueElements.queueAdminRetryButton.addEventListener('click', retryQueueAction);
+  queueElements.queueAddSongsButton.addEventListener('click', openQueuePicker);
+  queueElements.queuePickerDone.addEventListener('click', () => closeQueuePicker());
+  queueElements.queuePickerRetry.addEventListener('click', () => queuePicker.retry());
+  queueElements.queuePickerSearch.addEventListener('input', () => {
+    clearTimeout(pickerSearchTimer);
+    pickerSearchTimer = setTimeout(loadQueuePickerSongs, SEARCH_DEBOUNCE_MS);
+  });
+  queueElements.queuePickerList.addEventListener('change', () => { clearTimeout(pickerSearchTimer); loadQueuePickerSongs(); });
+  queueElements.queuePickerScroller.addEventListener('scroll', () => { renderQueuePicker(); schedulePickerPreviewLookup(); });
+  queueElements.queuePicker.addEventListener('keydown', handlePickerKeydown);
+  new ResizeObserver(() => { updatePickerLayout(); pickerRange.start = -1; renderQueuePicker(); }).observe(queueElements.queuePickerScroller);
+  window.addEventListener('scroll', () => { if (pickerOpen) updatePickerLayout(); }, { passive: true });
+  window.visualViewport?.addEventListener('resize', updatePickerLayout);
+  window.visualViewport?.addEventListener('scroll', updatePickerLayout);
+  queueElements.pauseAfterAttempt.addEventListener('change', saveQueuePreferences);
+  queueElements.queueRecoveryAdminButton.addEventListener('click', requestAdminPage);
+  queueElements.queueConfirmRestartButton.addEventListener('click', confirmConsoleRestarted);
+  queueElements.queueReconcileStorageButton.addEventListener('click', reconcileQueueStorage);
+  window.addEventListener('pagehide', () => queueClient.close());
+  window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
   elements.saveConfigButton.addEventListener('click', saveConfig);
   elements.savePreviewsButton.addEventListener('click', savePreviewSettings);
   // Keep fixed letter navigation from covering the required provider credit.
@@ -1032,6 +1575,7 @@ function attachEvents() {
   });
   elements.songListSelect.addEventListener('change', async (event) => {
     state.selectedListId = event.target.value;
+    loadQueueSeedCount();
     await loadSongs();
     renderSongListOptions();
   });
@@ -1122,7 +1666,9 @@ async function init() {
   await loadSettings();
   await loadSongLists();
   await loadPreviewStatus(true);
-  setPage('songs');
+  setPage('songs', true);
+  renderQueue();
+  queueClient.connect();
   setTimeout(pollPreviews, 10000);
 }
 

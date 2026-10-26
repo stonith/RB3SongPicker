@@ -21,6 +21,8 @@ COPY --chown=node:node . ./
 RUN mkdir -p /data && chown node:node /data
 
 USER node
-EXPOSE 3000
+# 21070/udp is the RB3Enhanced event listener; it is separate from the web UI's TCP port
+# and from the console's own HTTP port, which happens to use the same number.
+EXPOSE 3000 21070/udp
 
 CMD ["node", "server.js"]

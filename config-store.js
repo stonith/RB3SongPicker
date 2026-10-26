@@ -1,10 +1,15 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const { isIPv4 } = require('node:net');
+const validPort = value => Number.isInteger(value) && value >= 1 && value <= 65535;
 
 const DEFAULT_CONFIG = Object.freeze({
   xboxIp: '192.168.0.100',
   xboxPort: 21070,
   theme: 'default',
+  eventsBindAddress: '0.0.0.0',
+  eventsPort: 21070,
+  pauseAfterAttempt: false,
   adminPinHash: null,
   adminPinSalt: null
 });
@@ -28,6 +33,9 @@ class ConfigStore {
         xboxIp: cfg.xboxIp || DEFAULT_CONFIG.xboxIp,
         xboxPort: Number(cfg.xboxPort) || DEFAULT_CONFIG.xboxPort,
         theme: cfg.theme === 'strata' ? 'strata' : 'default',
+        eventsBindAddress: isIPv4(cfg.eventsBindAddress || '') ? cfg.eventsBindAddress : DEFAULT_CONFIG.eventsBindAddress,
+        eventsPort: validPort(cfg.eventsPort) ? cfg.eventsPort : DEFAULT_CONFIG.eventsPort,
+        pauseAfterAttempt: cfg.pauseAfterAttempt === true,
         adminPinSalt: pinValid ? cfg.adminPinSalt : null,
         adminPinHash: pinValid ? cfg.adminPinHash : null
       };
@@ -42,6 +50,9 @@ class ConfigStore {
       xboxIp: config.xboxIp || DEFAULT_CONFIG.xboxIp,
       xboxPort: Number(config.xboxPort) || DEFAULT_CONFIG.xboxPort,
       theme: config.theme === 'strata' ? 'strata' : 'default',
+      eventsBindAddress: isIPv4(config.eventsBindAddress || '') ? config.eventsBindAddress : DEFAULT_CONFIG.eventsBindAddress,
+      eventsPort: validPort(config.eventsPort) ? config.eventsPort : DEFAULT_CONFIG.eventsPort,
+      pauseAfterAttempt: config.pauseAfterAttempt === true,
       adminPinSalt: config.adminPinSalt || null,
       adminPinHash: config.adminPinHash || null
     };
