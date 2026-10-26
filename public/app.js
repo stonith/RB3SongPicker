@@ -18,7 +18,10 @@ const state = {
   virtualEnd: 0,
   songsRequestId: 0,
   previewEnabled: false,
-  previewCountry: 'US'
+  previewCountry: 'US',
+  theme: 'default',
+  adminPinEnabled: false,
+  adminUnlocked: false
 };
 
 const VIRTUAL_OVERSCAN = 12;
@@ -32,6 +35,17 @@ const elements = {
   xboxIp: document.getElementById('xboxIp'),
   xboxPort: document.getElementById('xboxPort'),
   saveConfigButton: document.getElementById('saveConfigButton'),
+  defaultTheme: document.getElementById('defaultTheme'),
+  strataThemeStylesheet: document.getElementById('strataThemeStylesheet'),
+  adminPin: document.getElementById('adminPin'),
+  adminPinHint: document.getElementById('adminPinHint'),
+  saveAdminPinButton: document.getElementById('saveAdminPinButton'),
+  clearAdminPinButton: document.getElementById('clearAdminPinButton'),
+  adminPinDialog: document.getElementById('adminPinDialog'),
+  adminPinForm: document.getElementById('adminPinForm'),
+  adminPinEntry: document.getElementById('adminPinEntry'),
+  adminPinError: document.getElementById('adminPinError'),
+  cancelAdminPinButton: document.getElementById('cancelAdminPinButton'),
   refreshButton: document.getElementById('refreshButton'),
   enablePreviews: document.getElementById('enablePreviews'),
   previewCountry: document.getElementById('previewCountry'),
@@ -208,7 +222,7 @@ async function pollPreviews() {
 function setStatus(message, isError = false) {
   const prefix = isError ? '⚠️ ' : '✨ ';
   elements.summaryText.textContent = `${prefix}${message}`;
-  elements.summaryText.style.color = isError ? '#fca5a5' : '#a5f3fc';
+  elements.summaryText.style.color = isError ? 'var(--st-danger-text)' : 'var(--st-accent-text)';
 }
 
 async function apiFetch(url, options = {}) {
@@ -239,13 +253,117 @@ async function loadVersion() {
   }
 }
 
+function applyTheme(theme) {
+  state.theme = theme === 'strata' ? 'strata' : 'default';
+  document.documentElement.dataset.theme = state.theme;
+  elements.strataThemeStylesheet.disabled = state.theme !== 'strata';
+  if (elements.defaultTheme) elements.defaultTheme.value = state.theme;
+}
+
 async function loadConfig() {
   try {
     const config = await apiFetch('/api/config');
     elements.xboxIp.value = config.xboxIp || '';
     elements.xboxPort.value = config.xboxPort || '';
+    state.adminPinEnabled = Boolean(config.adminPinEnabled);
+    applyTheme(config.theme);
+    updateAdminPinHint();
   } catch (error) {
     setStatus(`Cannot load config: ${error.message}`, true);
+  }
+}
+
+async function saveTheme() {
+  const theme = elements.defaultTheme.value === 'strata' ? 'strata' : 'default';
+  try {
+    const config = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme })
+    });
+    applyTheme(config.theme);
+    setStatus(`Default theme set to ${theme === 'strata' ? 'Strata' : 'Default'}.`);
+  } catch (error) {
+    elements.defaultTheme.value = state.theme;
+    setStatus(`Cannot save theme: ${error.message}`, true);
+  }
+}
+
+function updateAdminPinHint() {
+  elements.adminPinHint.textContent = state.adminPinEnabled
+    ? 'PIN is on. Admin will prompt for it when opened.'
+    : 'PIN is off. Enter exactly 4 digits to enable the Admin screen prompt.';
+}
+
+async function saveAdminPin() {
+  const pin = elements.adminPin.value;
+  if (!/^[0-9]{4}$/.test(pin)) {
+    elements.adminPin.setCustomValidity('Enter exactly 4 digits.');
+    elements.adminPin.reportValidity();
+    return;
+  }
+  elements.adminPin.setCustomValidity('');
+  try {
+    const result = await apiFetch('/api/admin/pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    state.adminPinEnabled = result.enabled;
+    elements.adminPin.value = '';
+    updateAdminPinHint();
+    setStatus('Admin PIN saved.');
+  } catch (error) {
+    setStatus(`Cannot save Admin PIN: ${error.message}`, true);
+  }
+}
+
+async function clearAdminPin() {
+  try {
+    const result = await apiFetch('/api/admin/pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: '' })
+    });
+    state.adminPinEnabled = result.enabled;
+    elements.adminPin.value = '';
+    updateAdminPinHint();
+    setStatus('Admin PIN turned off.');
+  } catch (error) {
+    setStatus(`Cannot turn off Admin PIN: ${error.message}`, true);
+  }
+}
+
+function requestAdminPage() {
+  if (!state.adminPinEnabled) {
+    setPage('admin');
+    return;
+  }
+  elements.adminPinEntry.value = '';
+  elements.adminPinError.hidden = true;
+  elements.adminPinDialog.classList.remove('hidden');
+  elements.adminPinEntry.focus();
+}
+
+async function verifyAdminPin(event) {
+  event.preventDefault();
+  try {
+    const result = await apiFetch('/api/admin/pin/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: elements.adminPinEntry.value })
+    });
+    if (!result.valid) {
+      elements.adminPinError.hidden = false;
+      elements.adminPinEntry.select();
+      return;
+    }
+    elements.adminPinDialog.classList.add('hidden');
+    state.adminUnlocked = true;
+    setPage('admin');
+  } catch (error) {
+    elements.adminPinError.textContent = `Cannot verify PIN: ${error.message}`;
+    elements.adminPinError.hidden = false;
   }
 }
 
@@ -858,6 +976,7 @@ function cancelSongList() {
 
 function setPage(page) {
   state.currentPage = page;
+  if (page !== 'admin') state.adminUnlocked = false;
   if (page !== 'songs') previewPlayer.stop();
   elements.pages.songs.classList.toggle('hidden', page !== 'songs');
   elements.pages.admin.classList.toggle('hidden', page !== 'admin');
@@ -900,7 +1019,12 @@ function attachEvents() {
   elements.gotoDown.addEventListener('click', () => navigateGroup(1));
   elements.gotoBottom.addEventListener('click', scrollToBottom);
   elements.pageButtons.songs.addEventListener('click', () => setPage('songs'));
-  elements.pageButtons.admin.addEventListener('click', () => setPage('admin'));
+  elements.pageButtons.admin.addEventListener('click', requestAdminPage);
+  elements.defaultTheme.addEventListener('change', saveTheme);
+  elements.saveAdminPinButton.addEventListener('click', saveAdminPin);
+  elements.clearAdminPinButton.addEventListener('click', clearAdminPin);
+  elements.adminPinForm.addEventListener('submit', verifyAdminPin);
+  elements.cancelAdminPinButton.addEventListener('click', () => elements.adminPinDialog.classList.add('hidden'));
   elements.searchInput.addEventListener('input', (event) => {
     state.searchText = event.target.value;
     clearTimeout(searchDebounceTimer);
@@ -980,6 +1104,8 @@ function renderSortButtons() {
 
 async function init() {
   attachEvents();
+  applyTheme('default');
+  await loadConfig();
   updateGotoDefaultState();
   renderSortButtons();
   updateSortHeaders();

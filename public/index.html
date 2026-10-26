@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="default">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RB3 Song Picker</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%F0%9F%8E%B8%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="tokens.css" />
   <link rel="stylesheet" href="app.css" />
+  <link id="strataThemeStylesheet" rel="stylesheet" href="strata.css" disabled />
 </head>
 <body>
   <div class="app-shell">
@@ -113,6 +115,24 @@
         <div class="panel-header">
           <h2>Admin</h2>
         </div>
+        <div class="panel-body config-grid">
+          <div class="panel-subtitle">Appearance and access</div>
+          <label for="defaultTheme">Default theme for all devices
+            <select id="defaultTheme">
+              <option value="default">Default (original)</option>
+              <option value="strata">Strata</option>
+            </select>
+          </label>
+          <label for="adminPin">Admin screen PIN (optional)
+            <input id="adminPin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" placeholder="Off" aria-describedby="adminPinHint" />
+          </label>
+          <div class="row button-row">
+            <button id="saveAdminPinButton" class="secondary" type="button">Save PIN</button>
+            <button id="clearAdminPinButton" class="secondary" type="button">Turn PIN off</button>
+          </div>
+          <p id="adminPinHint" class="hint" role="status">PIN is off. Enter exactly 4 digits to enable the Admin screen prompt.</p>
+          <p class="hint">The PIN only gates the Admin screen in this app; it does not secure API endpoints.</p>
+        </div>
         <div class="panel-body qr-panel">
           <div class="qr-preview">
             <img id="qrImage" src="" alt="Scan to open" />
@@ -176,6 +196,20 @@
       </section>
       <footer class="footer">RB3 Song Picker - proxy UI for localized Xbox web server · <span id="appVersion">development</span></footer>
     </section>
+  </div>
+  <div id="adminPinDialog" class="pin-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="adminPinTitle">
+    <form id="adminPinForm" class="pin-dialog__card">
+      <h2 id="adminPinTitle">Admin PIN</h2>
+      <p>Enter the 4-digit PIN to open Admin.</p>
+      <label for="adminPinEntry">PIN
+        <input id="adminPinEntry" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" required />
+      </label>
+      <p id="adminPinError" class="hint" role="alert" hidden>Incorrect PIN. Try again.</p>
+      <div class="button-row">
+        <button id="cancelAdminPinButton" class="secondary" type="button">Cancel</button>
+        <button class="primary" type="submit">Unlock</button>
+      </div>
+    </form>
   </div>
   <script src="virtual-list.js"></script>
   <script src="preview-player.js"></script>

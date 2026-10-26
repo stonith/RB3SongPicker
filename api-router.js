@@ -75,17 +75,42 @@ function createApiRouter({ db, configStore, xboxService, previewStore, previewWo
   });
 
   router.get('/config', wrapAsync(async (req, res) => {
-    res.json(configStore.load());
+    const config = configStore.load();
+    res.json({
+      xboxIp: config.xboxIp,
+      xboxPort: config.xboxPort,
+      theme: config.theme === 'strata' ? 'strata' : 'default',
+      adminPinEnabled: Boolean(config.adminPinHash)
+    });
   }));
 
   router.post('/config', wrapAsync(async (req, res) => {
-    const { xboxIp, xboxPort } = req.body;
     const currentConfig = configStore.load();
     const updatedConfig = configStore.save({
-      xboxIp: xboxIp || currentConfig.xboxIp,
-      xboxPort: Number(xboxPort) || currentConfig.xboxPort
+      ...currentConfig,
+      xboxIp: req.body?.xboxIp || currentConfig.xboxIp,
+      xboxPort: Number(req.body?.xboxPort) || currentConfig.xboxPort,
+      theme: req.body?.theme === 'strata' ? 'strata' : (req.body?.theme === 'default' ? 'default' : currentConfig.theme)
     });
-    res.json(updatedConfig);
+    res.json({
+      xboxIp: updatedConfig.xboxIp,
+      xboxPort: updatedConfig.xboxPort,
+      theme: updatedConfig.theme,
+      adminPinEnabled: Boolean(updatedConfig.adminPinHash)
+    });
+  }));
+
+  router.post('/admin/pin', wrapAsync(async (req, res) => {
+    const pin = req.body?.pin;
+    if (pin !== '' && (typeof pin !== 'string' || !/^[0-9]{4}$/.test(pin))) {
+      return res.status(400).json({ error: 'PIN must be exactly 4 digits, or empty to disable it.' });
+    }
+    res.json(configStore.setAdminPin(pin));
+  }));
+
+  router.post('/admin/pin/verify', wrapAsync(async (req, res) => {
+    const pin = req.body?.pin;
+    res.json({ valid: typeof pin === 'string' && configStore.verifyAdminPin(pin) });
   }));
 
   router.get('/settings', wrapAsync(async (req, res) => {
