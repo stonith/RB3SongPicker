@@ -4,6 +4,9 @@ const ConfigStore = require('./config-store');
 const Database = require('./database');
 const XboxService = require('./xbox-service');
 const { createApiRouter } = require('./api-router');
+const PreviewStore = require('./preview-store');
+const PreviewWorker = require('./preview-worker');
+const ApplePreviewService = require('./apple-preview-service');
 
 const BASE_DIR = __dirname;
 const STATE_DIR = process.env.STATE_DIR ? path.resolve(process.env.STATE_DIR) : BASE_DIR;
@@ -18,7 +21,9 @@ if (typeof fetch !== 'function') {
 const configStore = new ConfigStore(CONFIG_PATH);
 const db = new Database(DB_PATH);
 const xboxService = new XboxService(configStore);
-const apiRouter = createApiRouter({ db, configStore, xboxService });
+const previewStore = new PreviewStore(db);
+const previewWorker = new PreviewWorker(previewStore, new ApplePreviewService());
+const apiRouter = createApiRouter({ db, configStore, xboxService, previewStore, previewWorker });
 
 const app = express();
 app.use(express.json());
@@ -35,6 +40,27 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = Number(process.env.PORT) || 3000;
-app.listen(PORT, () => {
-  console.log(`RB3 Song Picker server listening on http://localhost:${PORT}`);
+async function start() {
+  await db.ready;
+  await previewStore.initialize();
+  const server = app.listen(PORT, () => {
+    console.log(`RB3 Song Picker server listening on http://localhost:${PORT}`);
+    previewWorker.start();
+  });
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    const closed = new Promise(resolve => server.close(resolve));
+    await previewWorker.stop();
+    await closed;
+    await db.close();
+  };
+  process.once('SIGINT', () => shutdown().catch(console.error));
+  process.once('SIGTERM', () => shutdown().catch(console.error));
+}
+
+start().catch(error => {
+  console.error('Cannot start server:', error);
+  process.exitCode = 1;
 });

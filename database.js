@@ -1,71 +1,69 @@
 const sqlite3 = require('sqlite3').verbose();
+const { AsyncLocalStorage } = require('node:async_hooks');
 
 class Database {
   constructor(dbPath) {
     this.db = new sqlite3.Database(dbPath);
-    this.initializeSchema();
+    this.context = new AsyncLocalStorage();
+    this.tail = Promise.resolve();
+    this.ready = this.initializeSchema();
   }
 
-  initializeSchema() {
-    this.db.serialize(() => {
-      this.db.run('PRAGMA journal_mode = WAL');
-      this.db.run('PRAGMA foreign_keys = ON');
+  async initializeSchema() {
+    await this.rawRun('PRAGMA journal_mode = WAL');
+    await this.rawRun('PRAGMA foreign_keys = ON');
+    await this.rawRun(`CREATE TABLE IF NOT EXISTS songs (
+      shortname TEXT PRIMARY KEY, title TEXT, artist TEXT, album TEXT, origin TEXT,
+      updated_at TEXT, present INTEGER NOT NULL DEFAULT 1
+    )`);
+    const columns = await this.rawAll('PRAGMA table_info(songs)');
+    if (!columns.some(column => column.name === 'present')) {
+      await this.rawRun('ALTER TABLE songs ADD COLUMN present INTEGER NOT NULL DEFAULT 1');
+    }
+    await this.rawRun(`CREATE TABLE IF NOT EXISTS picks (
+      shortname TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY(shortname) REFERENCES songs(shortname) ON DELETE CASCADE
+    )`);
+    await this.rawRun(`CREATE TABLE IF NOT EXISTS songlists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+      created_at TEXT, updated_at TEXT
+    )`);
+    await this.rawRun(`CREATE TABLE IF NOT EXISTS songlist_items (
+      list_id INTEGER NOT NULL, shortname TEXT NOT NULL, PRIMARY KEY(list_id, shortname),
+      FOREIGN KEY(list_id) REFERENCES songlists(id) ON DELETE CASCADE,
+      FOREIGN KEY(shortname) REFERENCES songs(shortname) ON DELETE CASCADE
+    )`);
+    await this.rawRun('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)');
+  }
 
-      this.db.run(
-        `CREATE TABLE IF NOT EXISTS songs (
-          shortname TEXT PRIMARY KEY,
-          title TEXT,
-          artist TEXT,
-          album TEXT,
-          origin TEXT,
-          updated_at TEXT,
-          present INTEGER NOT NULL DEFAULT 1
-        )`
-      );
+  // All connection access shares this queue. Calls inside a transaction inherit its
+  // context; unrelated HTTP requests/worker writes cannot accidentally join it.
+  async exclusive(work) {
+    await this.ready;
+    if (this.context.getStore()?.active) return work();
+    const result = this.tail.then(() => this.context.run({ active: true }, async () => {
+      const scope = this.context.getStore();
+      try { return await work(); } finally { scope.active = false; }
+    }));
+    this.tail = result.catch(() => {});
+    return result;
+  }
 
-      this.db.all('PRAGMA table_info(songs)', (err, rows) => {
-        if (!err && rows && !rows.some((column) => column.name === 'present')) {
-          this.db.run('ALTER TABLE songs ADD COLUMN present INTEGER NOT NULL DEFAULT 1');
-        }
-      });
-
-      this.db.run(
-        `CREATE TABLE IF NOT EXISTS picks (
-          shortname TEXT PRIMARY KEY,
-          count INTEGER NOT NULL DEFAULT 0,
-          FOREIGN KEY(shortname) REFERENCES songs(shortname) ON DELETE CASCADE
-        )`
-      );
-
-      this.db.run(
-        `CREATE TABLE IF NOT EXISTS songlists (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT NOT NULL UNIQUE,
-          created_at TEXT,
-          updated_at TEXT
-        )`
-      );
-
-      this.db.run(
-        `CREATE TABLE IF NOT EXISTS songlist_items (
-          list_id INTEGER NOT NULL,
-          shortname TEXT NOT NULL,
-          PRIMARY KEY(list_id, shortname),
-          FOREIGN KEY(list_id) REFERENCES songlists(id) ON DELETE CASCADE,
-          FOREIGN KEY(shortname) REFERENCES songs(shortname) ON DELETE CASCADE
-        )`
-      );
-
-      this.db.run(
-        `CREATE TABLE IF NOT EXISTS settings (
-          key TEXT PRIMARY KEY,
-          value TEXT
-        )`
-      );
+  transaction(work) {
+    return this.exclusive(async () => {
+      await this.rawRun('BEGIN IMMEDIATE');
+      try {
+        const result = await work();
+        await this.rawRun('COMMIT');
+        return result;
+      } catch (error) {
+        await this.rawRun('ROLLBACK');
+        throw error;
+      }
     });
   }
 
-  promisifyRun(sql, params = []) {
+  rawRun(sql, params = []) {
     return new Promise((resolve, reject) => {
       this.db.run(sql, params, function (err) {
         if (err) return reject(err);
@@ -74,23 +72,21 @@ class Database {
     });
   }
 
-  promisifyGet(sql, params = []) {
+  rawGet(sql, params = []) {
     return new Promise((resolve, reject) => {
-      this.db.get(sql, params, (err, row) => {
-        if (err) return reject(err);
-        resolve(row);
-      });
+      this.db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
     });
   }
 
-  promisifyAll(sql, params = []) {
+  rawAll(sql, params = []) {
     return new Promise((resolve, reject) => {
-      this.db.all(sql, params, (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows);
-      });
+      this.db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
     });
   }
+
+  promisifyRun(sql, params = []) { return this.exclusive(() => this.rawRun(sql, params)); }
+  promisifyGet(sql, params = []) { return this.exclusive(() => this.rawGet(sql, params)); }
+  promisifyAll(sql, params = []) { return this.exclusive(() => this.rawAll(sql, params)); }
 
   async getSetting(key, defaultValue = null) {
     const row = await this.promisifyGet('SELECT value FROM settings WHERE key = ?', [key]);
@@ -102,6 +98,12 @@ class Database {
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
       [key, value]
     );
+  }
+
+  async close() {
+    await this.exclusive(() => new Promise((resolve, reject) => {
+      this.db.close(error => error ? reject(error) : resolve());
+    }));
   }
 }
 

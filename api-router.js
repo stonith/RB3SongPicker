@@ -25,8 +25,37 @@ function songMatchesSearch(song, tokens) {
   });
 }
 
-function createApiRouter({ db, configStore, xboxService }) {
+function createApiRouter({ db, configStore, xboxService, previewStore, previewWorker }) {
   const router = express.Router();
+
+  if (previewStore) {
+    router.get('/previews', wrapAsync(async (req, res) => {
+      res.json(await previewStore.status());
+    }));
+    router.post('/previews/lookup', wrapAsync(async (req, res) => {
+      const names = req.body?.shortnames;
+      if (!Array.isArray(names) || names.length > 200 || names.some(name => typeof name !== 'string' || name.length > 1000)) {
+        return res.status(400).json({ error: 'Provide up to 200 song shortnames.' });
+      }
+      if (!names.length) return res.json({ songs: [] });
+      const songs = await db.promisifyAll(`SELECT shortname, title, artist, album FROM songs
+        WHERE present = 1 AND shortname IN (${names.map(() => '?').join(',')})`, names);
+      const decorated = await previewStore.decorate(songs);
+      res.json({ songs: decorated.map(song => ({ shortname: song.shortname, preview: song.preview || null })) });
+    }));
+    router.post('/previews', wrapAsync(async (req, res) => {
+      const { enabled, country, negativeDays = 30 } = req.body || {};
+      const region = typeof country === 'string' && /^[A-Z]{2}$/.test(country)
+        ? new Intl.DisplayNames(['en'], { type: 'region', fallback: 'none' }).of(country) : null;
+      if (typeof enabled !== 'boolean' || !region || ['EU', 'UN', 'ZZ', 'XA', 'XB'].includes(country)
+          || !Number.isInteger(negativeDays) || negativeDays < 1 || negativeDays > 365) {
+        return res.status(400).json({ error: 'Provide enabled (boolean), a valid uppercase country code, and negativeDays (1–365).' });
+      }
+      await previewStore.configure({ enabled, country, negativeDays });
+      previewWorker?.requestReconcile();
+      res.json(await previewStore.status());
+    }));
+  }
 
   router.get('/local-url', (req, res) => {
     const port = req.socket.localPort || 3000;
@@ -131,13 +160,9 @@ function createApiRouter({ db, configStore, xboxService }) {
 
     const songs = await db.promisifyAll(query, params);
 
-    if (!search) {
-      return res.json({ songs });
-    }
-
     const tokens = search.split(/\s+/).filter(Boolean);
-    const normalizedSongs = songs.filter((song) => songMatchesSearch(song, tokens));
-    res.json({ songs: normalizedSongs });
+    const filteredSongs = search ? songs.filter((song) => songMatchesSearch(song, tokens)) : songs;
+    res.json({ songs: previewStore ? await previewStore.decorate(filteredSongs) : filteredSongs });
   }));
 
   router.post('/songs/refresh', wrapAsync(async (req, res) => {
@@ -148,26 +173,27 @@ function createApiRouter({ db, configStore, xboxService }) {
       return res.status(500).json({ message: 'No songs were returned from the Xbox server.' });
     }
 
-    await db.promisifyRun('BEGIN TRANSACTION');
-    await db.promisifyRun('UPDATE songs SET present = 0');
-
-    for (const song of songs) {
-      await db.promisifyRun(
-        `INSERT INTO songs (shortname, title, artist, album, origin, updated_at, present)
-         VALUES (?, ?, ?, ?, ?, datetime('now'), 1)
-         ON CONFLICT(shortname) DO UPDATE SET
-           title = excluded.title,
-           artist = excluded.artist,
-           album = excluded.album,
-           origin = excluded.origin,
-           updated_at = datetime('now'),
-           present = 1`,
-         [song.shortname, song.title, song.artist, song.album, song.origin]
-      );
-      await db.promisifyRun('INSERT OR IGNORE INTO picks (shortname, count) VALUES (?, 0)', [song.shortname]);
-    }
-
-    await db.promisifyRun('COMMIT');
+    await db.transaction(async () => {
+      await db.promisifyRun('UPDATE songs SET present = 0');
+      for (const song of songs) {
+        await db.promisifyRun(
+          `INSERT INTO songs (shortname, title, artist, album, origin, updated_at, present)
+           VALUES (?, ?, ?, ?, ?, datetime('now'), 1)
+           ON CONFLICT(shortname) DO UPDATE SET
+             title = excluded.title,
+             artist = excluded.artist,
+             album = excluded.album,
+             origin = excluded.origin,
+             updated_at = datetime('now'),
+             present = 1`,
+          [song.shortname, song.title, song.artist, song.album, song.origin]
+        );
+        await db.promisifyRun('INSERT OR IGNORE INTO picks (shortname, count) VALUES (?, 0)', [song.shortname]);
+      }
+    });
+    // Reconciliation is durable on startup too. Never wait for provider work or
+    // report a committed Xbox refresh as failed because preview enqueue failed.
+    previewWorker?.requestReconcile();
     res.json({ updated: songs.length });
   }));
 

@@ -87,6 +87,14 @@
               <tbody></tbody>
             </table>
           </div>
+          <audio id="previewAudio" preload="none" hidden></audio>
+          <span id="previewAnnouncement" class="visually-hidden" role="status"></span>
+          <div id="previewAttribution" class="preview-attribution" hidden>
+            <a id="previewStoreLink" target="_blank" rel="noopener noreferrer">
+              <img src="itunes-badge.svg" width="140" height="41" alt="Get it on iTunes" />
+            </a>
+            <small>Provided courtesy of iTunes</small>
+          </div>
           <div class="goto-controls collapsed" id="gotoControls">
             <button id="gotoToggle" type="button" class="small-button secondary goto-toggle" aria-label="Toggle navigation">☰</button>
             <div class="goto-actions">
@@ -130,6 +138,26 @@
             Show export to CSV button
           </label>
         </div>
+        <div class="panel-body config-grid preview-settings">
+          <div class="panel-subtitle">Song previews</div>
+          <p class="hint">Optional iTunes previews require internet. Confirm Apple's terms permit your use before enabling.
+            <a href="https://performance-partners.apple.com/resources/documentation/itunes-store-web-service-search-api/" target="_blank" rel="noopener noreferrer">Review preview terms</a>.
+          </p>
+          <label class="toggle-checkbox">
+            <input id="enablePreviews" type="checkbox" />
+            Enable previews and background matching
+          </label>
+          <label>Storefront country
+            <input id="previewCountry" type="text" value="US" maxlength="2" pattern="[A-Za-z]{2}" autocapitalize="characters" spellcheck="false" aria-describedby="previewCountryHint" />
+          </label>
+          <p id="previewCountryHint" class="hint">Two-letter country code (for example US, GB, AU). Availability varies by country.</p>
+          <label>Retry unavailable matches after (days)
+            <input id="previewNegativeDays" type="number" value="30" min="1" max="365" />
+          </label>
+          <button id="savePreviewsButton" class="secondary" type="button">Save preview settings</button>
+          <p id="previewProgress" class="hint" role="status">Previews are off by default.</p>
+          <p class="hint">About 17 Apple requests/minute. Matching resumes after restart. Pause by disabling; cached matches are kept. Refresh does not re-match unchanged songs.</p>
+        </div>
         <div class="panel-body config-grid server-panel">
           <div class="panel-subtitle">Server settings</div>
           <p class="hint config-hint">Make sure <code>EnableHTTPServer=true</code> in <code>rb3.ini</code> on the Xbox.</p>
@@ -150,6 +178,7 @@
     </section>
   </div>
   <script src="virtual-list.js"></script>
+  <script src="preview-player.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -16,19 +16,32 @@ const state = {
   loading: false,
   virtualStart: 0,
   virtualEnd: 0,
-  songsRequestId: 0
+  songsRequestId: 0,
+  previewEnabled: false,
+  previewCountry: 'US'
 };
 
 const VIRTUAL_OVERSCAN = 12;
 const SEARCH_DEBOUNCE_MS = 250;
 let searchDebounceTimer;
 let virtualRenderFrame;
+let previewVisibleTimer;
+let previewLookupId = 0;
 
 const elements = {
   xboxIp: document.getElementById('xboxIp'),
   xboxPort: document.getElementById('xboxPort'),
   saveConfigButton: document.getElementById('saveConfigButton'),
   refreshButton: document.getElementById('refreshButton'),
+  enablePreviews: document.getElementById('enablePreviews'),
+  previewCountry: document.getElementById('previewCountry'),
+  previewNegativeDays: document.getElementById('previewNegativeDays'),
+  savePreviewsButton: document.getElementById('savePreviewsButton'),
+  previewProgress: document.getElementById('previewProgress'),
+  previewAudio: document.getElementById('previewAudio'),
+  previewAnnouncement: document.getElementById('previewAnnouncement'),
+  previewAttribution: document.getElementById('previewAttribution'),
+  previewStoreLink: document.getElementById('previewStoreLink'),
   showListManagement: document.getElementById('showListManagement'),
   showDuplicateFilterButton: document.getElementById('showDuplicateFilterButton'),
   showShortnameColumn: document.getElementById('showShortnameColumn'),
@@ -72,6 +85,125 @@ const elements = {
   },
   tableHeaders: Array.from(document.querySelectorAll('th.sortable'))
 };
+
+const previewPlayer = new PreviewPlayer(elements.previewAudio, renderPreviewState);
+
+function updatePreviewRow(row, playback) {
+  const selected = state.previewEnabled && playback.song?.shortname === row.dataset.shortname;
+  const active = selected && ['loading', 'playing', 'paused'].includes(playback.status);
+  row.classList.toggle('preview-active', Boolean(active));
+  row.classList.toggle('preview-last', Boolean(selected && !active));
+  if (selected) row.setAttribute('aria-current', 'true');
+  else row.removeAttribute('aria-current');
+  const indicator = row.querySelector('.preview-row-status');
+  if (indicator) indicator.textContent = selected
+    ? active ? (playback.status === 'paused' ? 'Paused' : 'Previewing')
+      : playback.status === 'error' ? 'Preview failed' : 'Last previewed' : '';
+  const button = row.querySelector('[data-preview-shortname]');
+  if (button) {
+    const stoppable = selected && ['playing', 'loading'].includes(playback.status);
+    button.textContent = stoppable ? 'Stop' : 'Preview';
+    button.setAttribute('aria-pressed', String(Boolean(stoppable)));
+    const title = row.querySelector('.title-cell strong').textContent;
+    button.title = selected && playback.status === 'error' ? 'Preview failed. Tap to retry.'
+      : stoppable ? `Stop preview of ${title}` : `Preview ${title}`;
+    button.setAttribute('aria-label', button.title);
+  }
+}
+
+function renderPreviewState(playback) {
+  const song = playback.song;
+  // Audio stays outside virtualized rows, but all playback controls live in the
+  // list. Only the required store link/credit remains below it, without a box.
+  elements.previewAttribution.hidden = !state.previewEnabled || !song;
+  if (song) {
+    elements.previewStoreLink.href = song.preview.storeUrl;
+    const status = {
+      loading: 'Loading preview', playing: 'Playing preview', paused: 'Preview paused',
+      stopped: 'Preview stopped', finished: 'Preview finished',
+      error: 'Preview failed. Check your connection and try again.'
+    }[playback.status] || '';
+    const announcement = `${status}: ${song.title} — ${song.artist}`;
+    if (elements.previewAnnouncement.textContent !== announcement) elements.previewAnnouncement.textContent = announcement;
+  } else {
+    elements.previewStoreLink.removeAttribute('href');
+    elements.previewAnnouncement.textContent = '';
+  }
+  for (const row of elements.songsTableBody.querySelectorAll('.song-row')) updatePreviewRow(row, playback);
+}
+
+async function loadPreviewStatus(syncControls = false) {
+  try {
+    const data = await apiFetch('/api/previews');
+    const changed = state.previewEnabled !== data.enabled || state.previewCountry !== data.country;
+    state.previewEnabled = data.enabled;
+    state.previewCountry = data.country;
+    if (syncControls) {
+      elements.enablePreviews.checked = data.enabled;
+      elements.previewCountry.value = data.country;
+      elements.previewNegativeDays.value = data.negativeDays;
+    }
+    const counts = data.counts;
+    const remaining = (counts.pending || 0) + (counts.processing || 0) + (counts.retry || 0);
+    const cooldown = data.cooldownUntil ? ` Cooling down until ${new Date(data.cooldownUntil).toLocaleTimeString()}.` : '';
+    elements.previewProgress.textContent = `${data.enabled ? 'Matching enabled' : 'Off / paused'} · ${counts.matched || 0} matched · ${remaining} queued · ${(counts.unavailable || 0) + (counts.ambiguous || 0)} unavailable.${cooldown}`;
+    if (changed) {
+      previewPlayer.clear();
+      for (const song of state.songs) song.preview = data.enabled ? { status: 'pending' } : undefined;
+      renderSongTable(false, true);
+    }
+    return true;
+  } catch (error) {
+    elements.previewProgress.textContent = `Cannot load preview status: ${error.message}`;
+    return false;
+  }
+}
+
+async function refreshVisiblePreviews() {
+  if (!state.previewEnabled || state.currentPage !== 'songs' || !state.songs.length) return;
+  const requestId = ++previewLookupId;
+  const songsRequestId = state.songsRequestId;
+  const country = state.previewCountry;
+  const names = state.songs.slice(Math.max(0, state.virtualStart), state.virtualEnd).map(song => song.shortname);
+  try {
+    const data = await apiFetch('/api/previews/lookup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shortnames: names })
+    });
+    if (requestId !== previewLookupId || songsRequestId !== state.songsRequestId || country !== state.previewCountry || !state.previewEnabled) return;
+    const previews = new Map(data.songs.map(song => [song.shortname, song.preview]));
+    for (const song of state.songs) if (previews.has(song.shortname)) song.preview = previews.get(song.shortname);
+    renderSongTable(false, true);
+  } catch { /* Cached browsing and picking remain usable while offline. */ }
+}
+
+function schedulePreviewLookup() {
+  clearTimeout(previewVisibleTimer);
+  previewVisibleTimer = setTimeout(refreshVisiblePreviews, 200);
+}
+
+async function savePreviewSettings() {
+  elements.savePreviewsButton.disabled = true;
+  try {
+    await apiFetch('/api/previews', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: elements.enablePreviews.checked,
+        country: elements.previewCountry.value.trim().toUpperCase(),
+        negativeDays: Number(elements.previewNegativeDays.value) })
+    });
+    await loadPreviewStatus(true);
+    setStatus('Preview settings saved. Cached matches are preserved.');
+  } catch (error) {
+    elements.previewProgress.textContent = `Cannot save preview settings: ${error.message}`;
+  } finally { elements.savePreviewsButton.disabled = false; }
+}
+
+async function pollPreviews() {
+  if (!document.hidden) {
+    await loadPreviewStatus();
+    await refreshVisiblePreviews();
+  }
+  setTimeout(pollPreviews, 10000);
+}
 
 function setStatus(message, isError = false) {
   const prefix = isError ? '⚠️ ' : '✨ ';
@@ -340,21 +472,48 @@ function createSpacerRow(height) {
 function createSongRow(song, editingSet, inEditMode) {
   const row = document.createElement('tr');
   row.className = 'song-row';
+  row.dataset.shortname = song.shortname;
+  row.tabIndex = -1;
   row.innerHTML = `
-      <td class="title-cell"><strong>${song.title || '—'}</strong>
+      <td class="title-cell"><strong></strong>
       <div class="song-meta">
-        <div class="song-meta-primary">${song.artist || '—'}</div>
-        <div class="song-meta-secondary">${song.album || '—'} | ${song.origin || '—'}</div>
+        <div class="song-meta-primary"></div>
+        <div class="song-meta-secondary"></div>
       </div>
     </td>
-    <td class="artist-cell">${song.artist || '—'}</td>
-    <td class="album-cell">${song.album || '—'}</td>
-    <td class="origin-cell">${song.origin || '—'}</td>
-    <td class="shortname-column">${song.shortname || '—'}</td>
-    <td class="action-cell"></td>
+    <td class="artist-cell"></td>
+    <td class="album-cell"></td>
+    <td class="origin-cell"></td>
+    <td class="shortname-column"></td>
+    <td class="action-cell"><div class="song-actions"></div></td>
   `;
+  row.querySelector('.title-cell strong').textContent = song.title || '—';
+  row.querySelector('.song-meta-primary').textContent = song.artist || '—';
+  row.querySelector('.song-meta-secondary').textContent = `${song.album || '—'} | ${song.origin || '—'}`;
+  for (const key of ['artist', 'album', 'origin']) row.querySelector(`.${key}-cell`).textContent = song[key] || '—';
+  row.querySelector('.shortname-column').textContent = song.shortname || '—';
 
-  const actionCell = row.querySelector('.action-cell');
+  const actionCell = row.querySelector('.song-actions');
+  if (state.previewEnabled) {
+    const previewButton = document.createElement('button');
+    previewButton.type = 'button';
+    previewButton.className = 'small-button secondary preview-button';
+    const available = song.preview?.status === 'matched';
+    const active = previewPlayer.state.song?.shortname === song.shortname
+      && ['playing', 'loading'].includes(previewPlayer.state.status);
+    previewButton.textContent = available ? (active ? 'Stop' : 'Preview')
+      : ['unavailable', 'ambiguous'].includes(song.preview?.status) ? 'No clip' : 'Queued';
+    previewButton.disabled = !available;
+    previewButton.title = available ? `Preview ${song.title}` : previewButton.textContent === 'No clip'
+      ? 'No confident Apple preview match available' : 'Preview matching is pending; browsing does not use Apple API calls';
+    previewButton.setAttribute('aria-label', previewButton.title);
+    previewButton.setAttribute('aria-pressed', String(active));
+    if (available) {
+      previewButton.dataset.previewShortname = song.shortname;
+      previewButton.addEventListener('click', () => previewPlayer.play(song));
+    }
+    actionCell.append(previewButton);
+  }
   const button = document.createElement('button');
   button.type = 'button';
   button.className = inEditMode ? 'small-button secondary' : 'small-button primary';
@@ -368,6 +527,12 @@ function createSongRow(song, editingSet, inEditMode) {
     button.addEventListener('click', () => pickSong(song.shortname));
   }
   actionCell.append(button);
+  if (state.previewEnabled) {
+    const indicator = document.createElement('span');
+    indicator.className = 'preview-row-status';
+    actionCell.append(indicator);
+  }
+  updatePreviewRow(row, previewPlayer.state);
   return row;
 }
 
@@ -376,6 +541,7 @@ function renderSongTable(resetScroll = false, force = false) {
   if (!state.songs.length) {
     elements.songsTableBody.innerHTML = '<tr><td colspan="6" class="empty-row">No songs found.</td></tr>';
     updateGotoControls();
+    renderPreviewState(previewPlayer.state);
     return;
   }
 
@@ -402,6 +568,7 @@ function renderSongTable(resetScroll = false, force = false) {
   if (end < state.songs.length) fragment.append(createSpacerRow((state.songs.length - end) * rowHeight));
   elements.songsTableBody.replaceChildren(fragment);
   updateGotoControls();
+  renderPreviewState(previewPlayer.state);
 }
 
 function scheduleVirtualRender() {
@@ -409,6 +576,7 @@ function scheduleVirtualRender() {
   virtualRenderFrame = requestAnimationFrame(() => {
     virtualRenderFrame = null;
     renderSongTable();
+    schedulePreviewLookup();
   });
 }
 
@@ -596,6 +764,7 @@ async function refreshLibrary() {
 }
 
 async function pickSong(shortname) {
+  previewPlayer.stop();
   try {
     setStatus(`Sending pick command for ${shortname}...`);
     const result = await apiFetch(`/api/songs/${encodeURIComponent(shortname)}/pick`, { method: 'POST' });
@@ -689,6 +858,7 @@ function cancelSongList() {
 
 function setPage(page) {
   state.currentPage = page;
+  if (page !== 'songs') previewPlayer.stop();
   elements.pages.songs.classList.toggle('hidden', page !== 'songs');
   elements.pages.admin.classList.toggle('hidden', page !== 'admin');
   elements.pageButtons.songs.classList.toggle('active', page === 'songs');
@@ -699,6 +869,7 @@ function setPage(page) {
     loadSongs();
   } else if (page === 'admin') {
     loadConfig();
+    loadPreviewStatus(true);
     // Sync admin checkboxes with current in-memory state (set at init and kept
     // up-to-date by saveSettings). Calling loadSettings() here would overwrite
     // the current state with a stale server read, unchecking freshly-toggled settings.
@@ -711,6 +882,12 @@ function setPage(page) {
 
 function attachEvents() {
   elements.saveConfigButton.addEventListener('click', saveConfig);
+  elements.savePreviewsButton.addEventListener('click', savePreviewSettings);
+  // Keep fixed letter navigation from covering the required provider credit.
+  const previewVisibility = new IntersectionObserver(([entry]) => {
+    elements.gotoControls.classList.toggle('preview-credit-visible', entry.isIntersecting && state.previewEnabled);
+  }, { rootMargin: '0px 0px 70px 0px' });
+  previewVisibility.observe(elements.previewAttribution);
   elements.refreshButton.addEventListener('click', refreshLibrary);
   elements.showListManagement.addEventListener('change', saveSettings);
   elements.showDuplicateFilterButton.addEventListener('change', saveSettings);
@@ -818,7 +995,9 @@ async function init() {
   }
   await loadSettings();
   await loadSongLists();
+  await loadPreviewStatus(true);
   setPage('songs');
+  setTimeout(pollPreviews, 10000);
 }
 
 init().catch((error) => setStatus(`Initialization failed: ${error.message}`, true));

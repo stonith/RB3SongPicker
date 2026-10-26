@@ -58,6 +58,31 @@ This app runs on a PC on the same local network as your Xbox.
 - All browser requests are proxied through the backend at `http://localhost:3000`.
 - Song selection sends a `/jump?shortname=...` request to the Xbox server.
 
+### Optional song previews
+
+Song previews are **off by default**. In Admin → **Song previews**, choose the two-letter storefront country, enable background matching, and save. Confirm that Apple's preview terms permit your use before enabling; this project does not establish that permission. See [Apple's Search API terms](https://performance-partners.apple.com/resources/documentation/itunes-store-web-service-search-api/).
+
+- **Preview** plays a confidently matched clip on the current phone/laptop without selecting it on the Xbox. Its button becomes **Stop** in the same row. There is no player box or separate playback toolbar; starting/stopping playback does not move the song list.
+- The current row is highlighted while previewing. After Stop, end-of-clip, or Pick, a quieter **Last previewed** highlight remains until you preview another song. Tap Preview again to replay. One hidden shared audio element keeps playback intact while rows are virtualized; a compact, unboxed iTunes link/credit stays beneath the list.
+- **Pick** stops preview playback before sending the selection; disabling previews or changing storefront clears the preview context.
+- **Queued** means matching is pending; **No clip** means no sufficiently reliable match was found. Covers and different live/acoustic/remixed recordings are deliberately rejected.
+- Audio streams directly from Apple after a tap. It requires internet and is not saved or proxied by this app. The player includes a store link, the official iTunes badge, and attribution; those alone do not establish permission for this use.
+- A single background worker spaces Apple metadata requests at least **3.5 seconds apart** (roughly 17/minute). Retries share the same budget, honor `Retry-After`, and apply a persistent provider-wide cooldown. Apple's approximate 20/minute limit may change, and other apps sharing your public IP can still cause throttling.
+- Jobs, matches, failed-match results, and request timing persist in SQLite. Restarting resumes work without refilling the rate budget. Disabling previews pauses work and hides playback; cached matches are retained.
+- **Refresh library never re-matches unchanged successful songs.** Only new/changed metadata needs reassessment. Equivalent artist/title searches share cached candidates; changing only the album can often be resolved without another search. Refreshing 5,000 unchanged cached matches makes zero Apple requests.
+- Unavailable results retry after 30 days by default (configurable from 1–365 for newly checked/cached results; existing deadlines are retained). Successful matches have no automatic expiry. Search-candidate metadata uses the same configured retention interval; audio is never cached. Ordinary browsing and Preview clicks never initiate an Apple search.
+- Approximately 5,000 unique searches take **five hours** before retries. Progress is shown in Admin; song rows update their visible preview states without reloading the entire library.
+- Changing the storefront uses a separate cache. Switching back reuses existing matches. Catalog availability differs by country.
+- Run **one application process per state directory**. Multiple workers/processes or independent installations sharing an IP need additional rate-limit coordination and are not supported by this queue.
+
+Manual match correction and other preview providers are not included in this first version. Preview errors do not automatically trigger provider re-searches, avoiding accidental API retry loops.
+
+#### Preview verification
+
+`npm test -- --runInBand` runs deterministic provider, matcher, rate-limit, real SQLite, API, and player tests without using Apple's quota. The integration suite includes a 5,000-song zero-repeat refresh check.
+
+For optional Chromium UI checks, install Playwright outside the project or in your tooling environment, install its Chromium browser, then run `node test/preview-browser.cjs`. Set `PLAYWRIGHT_MODULE` to an absolute Playwright module path if it is installed externally. The smoke test uses synthetic audio and a temporary in-memory library, checks desktop/mobile playback and virtualization, and writes screenshots to an OS temporary directory. No Xbox, real library, or Apple API calls are used.
+
 ### API routes
 
 | Method | Path | Description |
@@ -69,6 +94,8 @@ This app runs on a PC on the same local network as your Xbox.
 | `GET/POST` | `/api/settings` | Read/write UI feature toggles |
 | `GET/POST/DELETE` | `/api/songlists` | Manage song lists |
 | `GET` | `/api/local-url` | Get the local network URL (used to generate the QR code) |
+| `GET/POST` | `/api/previews` | Read progress or save `{ enabled, country, negativeDays }` (default retry interval: 30 days) |
+| `POST` | `/api/previews/lookup` | Read cached preview states for `{ shortnames: [...] }` (maximum 200); never calls Apple |
 
 ### Configuration
 
