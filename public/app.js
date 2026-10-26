@@ -38,15 +38,10 @@ const elements = {
   previewNegativeDays: document.getElementById('previewNegativeDays'),
   savePreviewsButton: document.getElementById('savePreviewsButton'),
   previewProgress: document.getElementById('previewProgress'),
-  previewPlayerPanel: document.getElementById('previewPlayerPanel'),
-  previewTitle: document.getElementById('previewTitle'),
-  previewPlaybackStatus: document.getElementById('previewPlaybackStatus'),
   previewAudio: document.getElementById('previewAudio'),
+  previewAnnouncement: document.getElementById('previewAnnouncement'),
+  previewAttribution: document.getElementById('previewAttribution'),
   previewStoreLink: document.getElementById('previewStoreLink'),
-  stopPreviewButton: document.getElementById('stopPreviewButton'),
-  replayPreviewButton: document.getElementById('replayPreviewButton'),
-  pickPreviewButton: document.getElementById('pickPreviewButton'),
-  showPreviewSongButton: document.getElementById('showPreviewSongButton'),
   showListManagement: document.getElementById('showListManagement'),
   showDuplicateFilterButton: document.getElementById('showDuplicateFilterButton'),
   showShortnameColumn: document.getElementById('showShortnameColumn'),
@@ -91,7 +86,7 @@ const elements = {
   tableHeaders: Array.from(document.querySelectorAll('th.sortable'))
 };
 
-const previewPlayer = new PreviewPlayer(elements.previewAudio, renderPreviewPlayer);
+const previewPlayer = new PreviewPlayer(elements.previewAudio, renderPreviewState);
 
 function updatePreviewRow(row, playback) {
   const selected = state.previewEnabled && playback.song?.shortname === row.dataset.shortname;
@@ -102,58 +97,39 @@ function updatePreviewRow(row, playback) {
   else row.removeAttribute('aria-current');
   const indicator = row.querySelector('.preview-row-status');
   if (indicator) indicator.textContent = selected
-    ? active ? (playback.status === 'paused' ? 'Paused' : 'Previewing') : 'Last previewed' : '';
+    ? active ? (playback.status === 'paused' ? 'Paused' : 'Previewing')
+      : playback.status === 'error' ? 'Preview failed' : 'Last previewed' : '';
   const button = row.querySelector('[data-preview-shortname]');
   if (button) {
     const stoppable = selected && ['playing', 'loading'].includes(playback.status);
     button.textContent = stoppable ? 'Stop' : 'Preview';
     button.setAttribute('aria-pressed', String(Boolean(stoppable)));
+    const title = row.querySelector('.title-cell strong').textContent;
+    button.title = selected && playback.status === 'error' ? 'Preview failed. Tap to retry.'
+      : stoppable ? `Stop preview of ${title}` : `Preview ${title}`;
+    button.setAttribute('aria-label', button.title);
   }
 }
 
-function renderPreviewPlayer(playback) {
-  // The enabled player always occupies its own space BELOW the grid. Starting
-  // and stopping clips never inserts/removes anything above the song rows.
-  elements.previewPlayerPanel.classList.toggle('hidden', !state.previewEnabled);
+function renderPreviewState(playback) {
   const song = playback.song;
-  const active = ['playing', 'loading', 'paused'].includes(playback.status);
-  const visible = song && state.songs.some(item => item.shortname === song.shortname);
-  elements.replayPreviewButton.disabled = !song || ['playing', 'loading'].includes(playback.status);
-  elements.stopPreviewButton.disabled = !song || !active;
-  elements.pickPreviewButton.disabled = !song;
-  elements.showPreviewSongButton.disabled = !visible;
-  elements.showPreviewSongButton.title = song && !visible
-    ? 'This song is not in the current results. Clear or change your filters to find it.' : 'Scroll to the last previewed song';
-  elements.previewStoreLink.hidden = !song;
+  // Audio stays outside virtualized rows, but all playback controls live in the
+  // list. Only the required store link/credit remains below it, without a box.
+  elements.previewAttribution.hidden = !state.previewEnabled || !song;
   if (song) {
-    elements.previewTitle.textContent = `${song.title} — ${song.artist}`;
     elements.previewStoreLink.href = song.preview.storeUrl;
-    elements.previewPlaybackStatus.textContent = {
-      loading: 'Loading preview…', playing: 'Playing preview', paused: 'Paused',
-      stopped: 'Stopped · Last previewed', finished: 'Finished · Last previewed',
-      error: 'Cannot play preview. Check your connection or open it in iTunes.'
+    const status = {
+      loading: 'Loading preview', playing: 'Playing preview', paused: 'Preview paused',
+      stopped: 'Preview stopped', finished: 'Preview finished',
+      error: 'Preview failed. Check your connection and try again.'
     }[playback.status] || '';
-    if (!visible) elements.previewPlaybackStatus.textContent += ' · Not in current results';
+    const announcement = `${status}: ${song.title} — ${song.artist}`;
+    if (elements.previewAnnouncement.textContent !== announcement) elements.previewAnnouncement.textContent = announcement;
   } else {
-    elements.previewTitle.textContent = 'Song preview';
-    elements.previewPlaybackStatus.textContent = 'Choose Preview beside a song. Audio plays on this device.';
     elements.previewStoreLink.removeAttribute('href');
+    elements.previewAnnouncement.textContent = '';
   }
   for (const row of elements.songsTableBody.querySelectorAll('.song-row')) updatePreviewRow(row, playback);
-}
-
-function showPreviewSong() {
-  const shortname = previewPlayer.state.song?.shortname;
-  const index = state.songs.findIndex(song => song.shortname === shortname);
-  if (index < 0) return;
-  const rowHeight = getVirtualRowHeight();
-  elements.songTableWrapper.scrollTop = Math.max(0, index * rowHeight
-    - (elements.songTableWrapper.clientHeight - rowHeight) / 2);
-  renderSongTable(false, true);
-  const row = Array.from(elements.songsTableBody.querySelectorAll('.song-row'))
-    .find(item => item.dataset.shortname === shortname);
-  row?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  row?.focus({ preventScroll: true });
 }
 
 async function loadPreviewStatus(syncControls = false) {
@@ -565,7 +541,7 @@ function renderSongTable(resetScroll = false, force = false) {
   if (!state.songs.length) {
     elements.songsTableBody.innerHTML = '<tr><td colspan="6" class="empty-row">No songs found.</td></tr>';
     updateGotoControls();
-    renderPreviewPlayer(previewPlayer.state);
+    renderPreviewState(previewPlayer.state);
     return;
   }
 
@@ -592,7 +568,7 @@ function renderSongTable(resetScroll = false, force = false) {
   if (end < state.songs.length) fragment.append(createSpacerRow((state.songs.length - end) * rowHeight));
   elements.songsTableBody.replaceChildren(fragment);
   updateGotoControls();
-  renderPreviewPlayer(previewPlayer.state);
+  renderPreviewState(previewPlayer.state);
 }
 
 function scheduleVirtualRender() {
@@ -907,18 +883,11 @@ function setPage(page) {
 function attachEvents() {
   elements.saveConfigButton.addEventListener('click', saveConfig);
   elements.savePreviewsButton.addEventListener('click', savePreviewSettings);
-  elements.stopPreviewButton.addEventListener('click', () => previewPlayer.stop());
-  elements.replayPreviewButton.addEventListener('click', () => previewPlayer.play(previewPlayer.state.song));
-  elements.pickPreviewButton.addEventListener('click', () => {
-    if (previewPlayer.state.song) pickSong(previewPlayer.state.song.shortname);
-  });
-  elements.showPreviewSongButton.addEventListener('click', showPreviewSong);
-  // Existing fixed letter navigation must not cover bottom-player controls or
-  // attribution. It returns as soon as the player is out of view.
+  // Keep fixed letter navigation from covering the required provider credit.
   const previewVisibility = new IntersectionObserver(([entry]) => {
-    elements.gotoControls.classList.toggle('preview-player-visible', entry.isIntersecting && state.previewEnabled);
+    elements.gotoControls.classList.toggle('preview-credit-visible', entry.isIntersecting && state.previewEnabled);
   }, { rootMargin: '0px 0px 70px 0px' });
-  previewVisibility.observe(elements.previewPlayerPanel);
+  previewVisibility.observe(elements.previewAttribution);
   elements.refreshButton.addEventListener('click', refreshLibrary);
   elements.showListManagement.addEventListener('change', saveSettings);
   elements.showDuplicateFilterButton.addEventListener('change', saveSettings);
