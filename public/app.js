@@ -208,7 +208,7 @@ async function pollPreviews() {
 function setStatus(message, isError = false) {
   const prefix = isError ? '⚠️ ' : '✨ ';
   elements.summaryText.textContent = `${prefix}${message}`;
-  elements.summaryText.style.color = isError ? '#fca5a5' : '#a5f3fc';
+  elements.summaryText.style.color = isError ? 'var(--st-danger-text)' : 'var(--st-accent-text)';
 }
 
 async function apiFetch(url, options = {}) {
