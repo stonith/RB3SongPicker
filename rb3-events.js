@@ -102,9 +102,11 @@ class Rb3Events extends EventEmitter {
         const observation = decodePacket(packet, remote, { sourceAddress: this.config.sourceAddress, receivedAt: this.now() });
         if (!observation) { this.droppedPackets++; return; }
         this.lastObservedAt = observation.receivedAt;
-        this.recentEvents.push({ type: observation.type, receivedAt: observation.receivedAt,
-          value: Buffer.isBuffer(observation.value) ? `${observation.value.length} bytes (binary)` : observation.value });
-        if (this.recentEvents.length > 10) this.recentEvents.shift();
+        if (observation.type !== 'STAGEKIT') {
+          this.recentEvents.push({ type: observation.type, receivedAt: observation.receivedAt,
+            value: Buffer.isBuffer(observation.value) ? `${observation.value.length} bytes (binary)` : observation.value });
+          if (this.recentEvents.length > 10) this.recentEvents.shift();
+        }
         this.emit('observation', observation);
       });
       socket.on('error', fail);

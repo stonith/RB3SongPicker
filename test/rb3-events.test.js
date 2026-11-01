@@ -87,6 +87,9 @@ describe('RB3 UDP listener lifecycle', () => {
     expect(history).toHaveLength(10);
     expect(history[0]).toMatchObject({ type: 'SONG_NAME', value: 'Song 2', receivedAt: 456 });
     expect(history[9].value).toBe('Song 11');
+    sockets[0].emit('message', raw(6, Buffer.alloc(2)), source);
+    expect(listener.diagnostics().recentEvents).toEqual(history);
+    expect(observations.at(-1).type).toBe('STAGEKIT');
     history[0].value = 'mutated';
     expect(listener.diagnostics().recentEvents[0].value).toBe('Song 2');
     sockets[0].emit('message', raw(5, Buffer.alloc(21)), source);
