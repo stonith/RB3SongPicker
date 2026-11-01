@@ -60,6 +60,16 @@ test('storage inhibition is visible and blocks Resume/manual selection without c
   expect(model.manualBlocked).toMatch(/storage/i);
 });
 
+test('event log displays at most ten events newest first with an empty fallback', () => {
+  const { describeEventLog } = require('../public/session-queue');
+  expect(describeEventLog()).toBe('No console events observed yet.');
+  const recentEvents = Array.from({ length: 12 }, (_, i) => ({ type: 'SONG_NAME', value: `Song ${i}`, receivedAt: i * 1000 }));
+  const lines = describeEventLog({ listener: { recentEvents } }).split('\n');
+  expect(lines).toHaveLength(10);
+  expect(lines[0]).toContain('SONG_NAME: Song 11');
+  expect(lines[9]).toContain('SONG_NAME: Song 2');
+});
+
 // Exercise the real app navigation/rendering without introducing a DOM dependency.
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -227,18 +237,59 @@ test('move to top control disables at the first upcoming position and while unsy
   app.run('queueClient.synchronized = false; renderQueue()');
   expect(app.nodes.queueUpcoming.children[1].children[2].children[0].disabled).toBe(true);
 });
-test('current song appears on Songs and Queue, distinguishing requested selection from gameplay', () => {
+test('current song appears on Songs and Queue only from console gameplay evidence', () => {
   const app = appHarness(); app.publish(1, { lockedEntryId: 'a' });
-  expect(app.nodes.songsCurrent.hidden).toBe(false);
-  expect(app.nodes.songsCurrentLabel.textContent).toBe('Awaiting start');
+  expect(app.nodes.songsCurrent.hidden).toBe(true);
+  app.run("queueClient.diagnostics = { evidence: { attempt: { shortname: 'a' } } }");
   app.publish(2, { lockedEntryId: 'a', currentAttempt: { entryId: 'a', shortname: 'a', expected: true } });
-  expect(app.nodes.queueCurrentLabel.textContent).toBe('Now playing · Locked');
+  expect(app.nodes.queueNowPlaying.hidden).toBe(false);
+  expect(app.nodes.queueNowPlayingTitle.textContent).toBe('Title a');
   expect(app.nodes.songsCurrentLabel.textContent).toBe('Now playing');
   expect(app.nodes.songsCurrentTitle.textContent).toBe('Title a');
   expect(app.nodes.songsCurrentArtist.textContent).toBe('Artist');
+  app.run('queueClient.diagnostics = { evidence: { attempt: null } }');
   app.publish(3, { status: 'completed', entries: [] });
+  expect(app.nodes.queueNowPlaying.hidden).toBe(true);
   expect(app.nodes.songsCurrent.hidden).toBe(true);
   expect(app.nodes.queueCurrent.hidden).toBe(true);
+});
+test('manual gameplay is shown without a queue and never replaced by stale queue identity', () => {
+  const app = appHarness();
+  app.run("state.songs = [{shortname:'manual', title:'Manual song', artist:'Manual artist'}]; queueClient.diagnostics = {evidence:{attempt:{shortname:'manual'}}}; queueClient.accept({version:1, session:null, operation:null}); renderQueue()");
+  expect(app.nodes.songsCurrent.hidden).toBe(false);
+  expect(app.nodes.songsCurrentTitle.textContent).toBe('Manual song');
+  expect(app.nodes.queueNowPlayingTitle.textContent).toBe('Manual song');
+  app.publish(2, { lockedEntryId: 'a', currentAttempt: { entryId: 'a', shortname: 'a' } });
+  expect(app.nodes.songsCurrentTitle.textContent).toBe('Manual song');
+  app.run('queueClient.diagnostics.evidence.attempt = null; renderQueue()');
+  expect(app.nodes.songsCurrent.hidden).toBe(true);
+  expect(app.nodes.queueNowPlaying.hidden).toBe(true);
+});
+test('manual gameplay resolves library metadata outside the visible song list and ignores late lookups', async () => {
+  const app = appHarness();
+  let finish;
+  app.fetch.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  app.run("queueClient.diagnostics = {evidence:{attempt:{shortname:'manual'}}}; renderQueue()");
+  expect(app.nodes.songsCurrentTitle.textContent).toBe('manual');
+  expect(app.fetch).toHaveBeenCalledWith('/api/songs?search=manual');
+  finish({ ok: true, json: async () => ({ songs: [{ shortname: 'manual', title: 'Actual song', artist: 'Actual artist' }] }) });
+  await new Promise(resolve => setImmediate(resolve));
+  expect(app.nodes.songsCurrentTitle.textContent).toBe('Actual song');
+  expect(app.nodes.queueNowPlayingArtist.textContent).toBe('Actual artist');
+  app.run("queueClient.diagnostics.evidence.uncertainty = 'listener-error'; renderQueue()");
+  expect(app.nodes.songsCurrent.hidden).toBe(true);
+  expect(app.nodes.queueNowPlaying.hidden).toBe(true);
+});
+test('an ended attempt cannot be resurrected by a delayed metadata response', async () => {
+  const app = appHarness();
+  let finish;
+  app.fetch.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  app.run("queueClient.diagnostics = {evidence:{attempt:{shortname:'manual'}}}; renderQueue()");
+  app.run('queueClient.diagnostics.evidence.attempt = null; renderQueue()');
+  finish({ ok: true, json: async () => ({ songs: [{ shortname: 'manual', title: 'Old song' }] }) });
+  await new Promise(resolve => setImmediate(resolve));
+  expect(app.nodes.songsCurrent.hidden).toBe(true);
+  expect(app.nodes.queueNowPlaying.hidden).toBe(true);
 });
 test('remote dispatch removes edit controls for newly locked entry and stale action is explained, not retargeted', async () => {
   const app = appHarness(); app.publish(1);

@@ -1178,7 +1178,14 @@ a:focus-visible {
 .queue-workspace .panel-body > p { margin: 0; }
 .queue-current { border-left: 3px solid #38bdf8; padding: 4px 16px; margin: 12px 0; }
 .queue-current h3 { margin-top: 0; font-size: 0.9rem; color: #a5f3fc; }
-#queueCurrentTitle, #songsCurrentTitle { font-size: 1.5rem; font-weight: 700; margin: 8px 0; overflow-wrap: anywhere; }
+#queueCurrentTitle, #songsCurrentTitle, #queueNowPlayingTitle { font-size: 1.5rem; font-weight: 700; margin: 8px 0; overflow-wrap: anywhere; }
+.queue-event-log {
+  box-sizing: border-box; width: 100%; min-width: 0; max-height: 180px;
+  overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  padding: 12px; margin: 0; border: 1px solid rgba(148, 163, 184, .25);
+  border-radius: 8px; background: rgba(0, 0, 0, .15); line-height: 1.6;
+}
+.queue-event-log:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
 .queue-warning { color: var(--st-warn-text); border-left: 3px solid currentColor; padding-left: 12px; }
 .queue-stop { margin-left: auto; }
 .queue-upcoming { padding-left: 32px; margin: 0; }

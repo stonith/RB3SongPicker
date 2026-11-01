@@ -176,6 +176,13 @@
     return snapshot?.operation && snapshot.operation.status !== 'reserved' ? snapshot.operation.id : null;
   }
 
+  function describeEventLog(diagnostics = {}) {
+    const events = (diagnostics.listener?.recentEvents || []).slice(-10).reverse();
+    return events.length ? events.map(event =>
+      `${new Date(event.receivedAt).toLocaleTimeString()} · ${event.type}: ${event.value}`
+    ).join('\n') : 'No console events observed yet.';
+  }
+
   function describeDiagnostics(diagnostics = {}) {
     const listener = diagnostics.listener || {};
     const evidence = diagnostics.evidence || {};
@@ -187,7 +194,7 @@
       + `Evidence epoch: ${evidence.epoch ?? 'unknown'}.${evidence.uncertainty ? ` Uncertainty: ${evidence.uncertainty}.` : ''} Silence is not a heartbeat or a readiness check.`;
   }
 
-  const exports = { QueueClient, describeQueue, startQueueDetails, moveEntryOrder, recoveryOperationId, describeDiagnostics };
+  const exports = { QueueClient, describeQueue, startQueueDetails, moveEntryOrder, recoveryOperationId, describeDiagnostics, describeEventLog };
   if (typeof module !== 'undefined' && module.exports) module.exports = exports;
   else root.SessionQueue = exports;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

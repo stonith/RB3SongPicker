@@ -111,12 +111,13 @@ const queueElements = Object.fromEntries([
   'queuePage', 'queueSource', 'queueStatus', 'queueSyncStatus', 'queueWarning', 'queueProgress',
   'queueCurrent', 'queueCurrentTitle', 'queueCurrentArtist', 'queueCurrentLabel', 'queueControls',
   'songsCurrent', 'songsCurrentTitle', 'songsCurrentArtist', 'songsCurrentLabel',
+  'queueNowPlaying', 'queueNowPlayingTitle', 'queueNowPlayingArtist',
   'queuePauseButton', 'queueResumeButton', 'queueSkipButton', 'queueStopButton', 'queueControlHint',
   'queueActionStatus', 'queueRetryButton', 'queueUpcoming', 'queueEmpty', 'queueTerminalHint', 'queuePreviewAttribution', 'queuePreviewStoreLink',
   'queueCompactStatus', 'queueCompactText', 'openQueueButton', 'startQueueButton', 'queueStartHint', 'queueManualHint',
   'queueAddSongsButton', 'queuePicker', 'queuePickerTitle', 'queuePickerDone', 'queuePickerSearch', 'queuePickerList', 'queuePickerSummary',
   'queuePickerFeedback', 'queuePickerRetry', 'queuePickerScroller', 'queuePickerBody', 'queuePickerAttribution', 'queuePickerStoreLink',
-  'pauseAfterAttempt', 'queuePreferenceStatus', 'queueDiagnostics', 'queueRecoverySection', 'queueRecoveryOperation',
+  'pauseAfterAttempt', 'queuePreferenceStatus', 'queueDiagnostics', 'queueEventLog', 'queueRecoverySection', 'queueRecoveryOperation',
   'queueRecoveryAdminButton', 'queueConfirmRestartButton', 'queueRecoveryStatus', 'queueAdminActionStatus', 'queueAdminRetryButton',
   'queueStorageRecoverySection', 'queueReconcileStorageButton', 'queueStorageRecoveryStatus'
 ].map(id => [id, document.getElementById(id)]));
@@ -139,7 +140,10 @@ function scheduleQueuePreviewLookup() {
   if (!state.previewEnabled || queuePreviewTimer) return;
   queuePreviewTimer = setTimeout(() => {
     queuePreviewTimer = null;
-    queuePreviewCache.refresh(QueuePreviews.queuePreviewSongs(queueClient.snapshot)).catch(() => {
+    const playing = actualNowPlaying();
+    const songs = QueuePreviews.queuePreviewSongs(queueClient.snapshot);
+    if (playing) songs.push(playing);
+    queuePreviewCache.refresh(songs).catch(() => {
       // Cached preview availability must never block shared queue actions.
     });
   }, 100);
@@ -148,7 +152,7 @@ function scheduleQueuePreviewLookup() {
 function renderQueuePreviews() {
   const model = SessionQueue.describeQueue(queueClient.snapshot);
   const entries = new Map(model.upcoming.map(song => [song.id, song]));
-  const rows = [[queueElements.queueCurrent, model.current], ...Array.from(queueElements.queueUpcoming.children)
+  const rows = [[queueElements.queueNowPlaying, actualNowPlaying()], [queueElements.queueCurrent, model.current], ...Array.from(queueElements.queueUpcoming.children)
     .map(row => [row, entries.get(row.dataset.entryId)])];
   for (const [row, song] of rows) {
     let button = row.querySelector?.('.queue-preview-button');
@@ -162,7 +166,7 @@ function renderQueuePreviews() {
       button = document.createElement('button'); button.type = 'button';
       button.className = 'small-button secondary queue-preview-button';
       button.addEventListener('click', () => {
-        const current = QueuePreviews.queuePreviewSongs(queueClient.snapshot).find(item => item.shortname === row.dataset.shortname);
+        const current = [actualNowPlaying(), ...QueuePreviews.queuePreviewSongs(queueClient.snapshot)].find(item => item?.shortname === row.dataset.shortname);
         const preview = queuePreviewCache.get(row.dataset.shortname);
         if (current && preview?.status === 'matched') previewPlayer.play({ ...current, preview });
       });
@@ -230,6 +234,29 @@ async function loadQueueSeedCount() {
   }
 }
 
+let nowPlayingMetadata = null;
+let nowPlayingLookup = null;
+
+function actualNowPlaying() {
+  const evidence = queueClient.diagnostics.evidence;
+  const attempt = evidence?.uncertainty ? null : evidence?.attempt;
+  if (!attempt?.shortname) return null;
+  const shortname = attempt.shortname;
+  const song = [nowPlayingMetadata, ...(state.songs || []), ...(queueClient.snapshot?.session?.entries || [])]
+    .find(song => song?.shortname === shortname);
+  if (!song && nowPlayingLookup !== shortname) {
+    nowPlayingLookup = shortname;
+    fetch(`/api/songs?search=${encodeURIComponent(shortname)}`)
+      .then(response => { if (!response.ok) throw new Error('Song lookup unavailable'); return response.json(); })
+      .then(data => {
+        if (queueClient.diagnostics.evidence?.attempt?.shortname !== shortname) return;
+        nowPlayingMetadata = data.songs.find(song => song.shortname === shortname) || { shortname };
+        renderQueue();
+      }).catch(() => { /* Actual shortname remains visible when metadata is unavailable. */ });
+  }
+  return { ...song, shortname, title: song?.title || shortname, artist: song?.artist || '—' };
+}
+
 function renderQueue() {
   const snapshot = queueClient.snapshot;
   const session = snapshot?.session;
@@ -246,17 +273,23 @@ function renderQueue() {
   queueElements.queueWarning.hidden = !model.warning;
   queueText(queueElements.queueWarning, model.warning);
   queueText(queueElements.queueProgress, session ? model.progress : '');
-  queueElements.queueCurrent.hidden = !model.current;
+  const playing = actualNowPlaying();
+  queueElements.queueCurrent.hidden = !model.current || model.current.shortname === playing?.shortname;
+  queueElements.queueNowPlaying.hidden = !playing;
+  if (playing) {
+    queueText(queueElements.queueNowPlayingTitle, playing.title);
+    queueText(queueElements.queueNowPlayingArtist, playing.artist);
+  }
   if (model.current) {
-    queueText(queueElements.queueCurrentLabel, session.currentAttempt ? 'Now playing · Locked' : 'Awaiting start · Locked');
+    queueText(queueElements.queueCurrentLabel, session.currentAttempt ? 'Queue current · Locked' : 'Awaiting start · Locked');
     queueText(queueElements.queueCurrentTitle, model.current.title || model.current.shortname);
     queueText(queueElements.queueCurrentArtist, model.current.artist || '—');
   }
-  queueElements.songsCurrent.hidden = !model.current;
-  if (model.current) {
-    queueText(queueElements.songsCurrentLabel, session.currentAttempt ? 'Now playing' : 'Awaiting start');
-    queueText(queueElements.songsCurrentTitle, model.current.title || model.current.shortname);
-    queueText(queueElements.songsCurrentArtist, model.current.artist || '—');
+  queueElements.songsCurrent.hidden = !playing;
+  if (playing) {
+    queueText(queueElements.songsCurrentLabel, 'Now playing');
+    queueText(queueElements.songsCurrentTitle, playing.title);
+    queueText(queueElements.songsCurrentArtist, playing.artist);
   }
   queueElements.queueControls.hidden = !model.active;
   queueElements.queuePauseButton.hidden = session?.status !== 'running';
@@ -326,6 +359,7 @@ function renderQueue() {
   queueElements.queueConfirmRestartButton.disabled = !queueClient.canCommand || !!queueClient.diagnostics.inhibited;
   queueText(queueElements.queueRecoveryOperation, operationId ? `Unresolved request: ${operationId}` : '');
   queueText(queueElements.queueDiagnostics, SessionQueue.describeDiagnostics(queueClient.diagnostics));
+  queueText(queueElements.queueEventLog, SessionQueue.describeEventLog(queueClient.diagnostics));
   renderQueueStart();
   updateManualSelection();
   renderQueuePreviews();

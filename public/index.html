@@ -34,6 +34,11 @@
           </div>
         </div>
         <div class="panel-body">
+          <section id="queueNowPlaying" class="queue-current" hidden aria-labelledby="queueNowPlayingLabel" aria-live="polite">
+            <h3 id="queueNowPlayingLabel">Now playing</h3>
+            <p id="queueNowPlayingTitle"></p>
+            <p id="queueNowPlayingArtist" class="hint"></p>
+          </section>
           <section id="queueCurrent" class="queue-current" hidden aria-labelledby="queueCurrentLabel">
             <h3 id="queueCurrentLabel">Current · Locked</h3>
             <p id="queueCurrentTitle"></p>
@@ -241,8 +246,9 @@
           <label class="toggle-checkbox"><input id="pauseAfterAttempt" type="checkbox" disabled /> Pause after each song attempt</label>
           <p class="hint">Off by default. When enabled, pause after every expected attempt: finish, quit, or failure. Resume continues to the next entry, not a replay. Changes apply to attempts starting after the save.</p>
           <p id="queuePreferenceStatus" class="hint" role="status"></p>
-          <h3>Console event observations</h3>
+          <h3 id="queueEventsTitle">Console event observations</h3>
           <p id="queueDiagnostics" class="hint"></p>
+          <pre id="queueEventLog" class="queue-event-log hint" tabindex="0" role="region" aria-labelledby="queueEventsTitle">No console events observed yet.</pre>
           <section id="queueStorageRecoverySection" hidden aria-labelledby="queueStorageRecoveryTitle">
             <h3 id="queueStorageRecoveryTitle">Queue storage failure</h3>
             <p class="hint">Restore database/filesystem availability, then reconcile retained results and gameplay boundaries without sending console requests again. Recovery leaves the queue paused; a new song-selection observation and explicit Resume are required. Unresolved console requests remain quarantined.</p>

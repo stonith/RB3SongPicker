@@ -79,6 +79,21 @@ describe('RB3 UDP listener lifecycle', () => {
     expect(observations[0]).toMatchObject({ type: 'SCREEN_NAME', receivedAt: 456 });
     expect(listener.diagnostics()).toMatchObject({ status: 'listening', lastObservedAt: 456, droppedPackets: 1 });
   });
+  test('retains only ten accepted events, summarizes binary data and resets on invalidation', async () => {
+    await listener.start();
+    for (let i = 0; i < 12; i++) sockets[0].emit('message', raw(2, Buffer.from(`Song ${i}`)), source);
+    sockets[0].emit('message', packet('start'), { address: '192.0.2.11' });
+    const history = listener.diagnostics().recentEvents;
+    expect(history).toHaveLength(10);
+    expect(history[0]).toMatchObject({ type: 'SONG_NAME', value: 'Song 2', receivedAt: 456 });
+    expect(history[9].value).toBe('Song 11');
+    history[0].value = 'mutated';
+    expect(listener.diagnostics().recentEvents[0].value).toBe('Song 2');
+    sockets[0].emit('message', raw(5, Buffer.alloc(21)), source);
+    expect(listener.diagnostics().recentEvents[9].value).toBe('21 bytes (binary)');
+    await listener.stop();
+    expect(listener.diagnostics().recentEvents).toEqual([]);
+  });
   test('bind failure is diagnostic, invalidates evidence and closes socket without throwing', async () => {
     listener.createSocket = () => { const socket = new Socket(); socket.bind = () => socket.emit('error', new Error('EADDRINUSE')); sockets.push(socket); return socket; };
     await expect(listener.start()).resolves.toBe(false);
