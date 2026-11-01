@@ -158,6 +158,15 @@
     const model = describeQueue(snapshot);
     const index = model.upcoming.findIndex(entry => entry.id === entryId);
     if (!model.active || index < 0) throw new Error('Only upcoming entries can move.');
+    if (direction === 'top') {
+      if (index === 0) throw new Error('Already at the top of the queue.');
+      const reordered = model.upcoming.map(entry => entry.id);
+      reordered.splice(index, 1);
+      reordered.unshift(entryId);
+      const upcomingIds = new Set(reordered);
+      let next = 0;
+      return snapshot.session.entries.map(entry => upcomingIds.has(entry.id) ? reordered[next++] : entry.id);
+    }
     const target = model.upcoming[index + direction];
     if (![1, -1].includes(direction) || !target) throw new Error('No upcoming position in that direction.');
     return snapshot.session.entries.map(entry => entry.id === entryId ? target.id : entry.id === target.id ? entryId : entry.id);

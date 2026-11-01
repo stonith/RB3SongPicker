@@ -202,14 +202,43 @@ test('real lost-response UI exposes Retry, disables fresh commands, and resolves
 test('upcoming controls are labelled by independent entry ID and submit complete order without moving locked current', async () => {
   const app = appHarness(); app.publish(1, { lockedEntryId: 'a', entries: [entry('a'), entry('b'), entry('c')] });
   const row = app.nodes.queueUpcoming.children[1];
-  expect(row.children[2].children.map(button => button.textContent)).toEqual(['↑', '↓', '−']);
-  expect(row.children[2].children.map(button => button.title)).toEqual(['Move up', 'Move down', 'Remove']);
-  expect(row.children[2].children.map(button => button.attributes['aria-label'])).toEqual(['Move up: Title c', 'Move down: Title c', 'Remove: Title c']);
+  expect(row.children[2].children.map(button => button.textContent)).toEqual(['⇈', '↑', '↓', '−']);
+  expect(row.children[2].children.map(button => button.title)).toEqual(['Move to top', 'Move up', 'Move down', 'Remove']);
+  expect(row.children[2].children.map(button => button.attributes['aria-label'])).toEqual(['Move to top: Title c', 'Move up: Title c', 'Move down: Title c', 'Remove: Title c']);
   expect(row.children[2].children[0].attributes['aria-label']).toMatch(/Title c/);
   app.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ ...app.context.nextSnapshot, version: 2 }) });
   app.run("queueClient.fetch = fetch; queueClient.commandId = () => 'move-c'");
   await app.run("moveQueueEntry('c', -1)");
   expect(JSON.parse(app.fetch.mock.calls[0][1].body)).toMatchObject({ type: 'reorder', entryIds: ['a', 'c', 'b'] });
+});
+test('move to top preserves current and handled slots and keeps other upcoming songs in order', () => {
+  const { moveEntryOrder } = require('../public/session-queue');
+  const snapshot = { session: { status: 'running', lockedEntryId: 'a', entries: [
+    entry('a'), entry('b'), entry('handled', 'handled'), entry('c'), entry('d')
+  ] } };
+  expect(moveEntryOrder(snapshot, 'd', 'top')).toEqual(['a', 'd', 'handled', 'b', 'c']);
+  expect(() => moveEntryOrder(snapshot, 'a', 'top')).toThrow(/upcoming/);
+  expect(() => moveEntryOrder(snapshot, 'b', 'top')).toThrow(/Already/);
+});
+test('move to top control disables at the first upcoming position and while unsynchronized', () => {
+  const app = appHarness(); app.publish(1);
+  expect(app.nodes.queueUpcoming.children[0].children[2].children[0].disabled).toBe(true);
+  expect(app.nodes.queueUpcoming.children[1].children[2].children[0].disabled).toBe(false);
+  app.run('queueClient.synchronized = false; renderQueue()');
+  expect(app.nodes.queueUpcoming.children[1].children[2].children[0].disabled).toBe(true);
+});
+test('current song appears on Songs and Queue, distinguishing requested selection from gameplay', () => {
+  const app = appHarness(); app.publish(1, { lockedEntryId: 'a' });
+  expect(app.nodes.songsCurrent.hidden).toBe(false);
+  expect(app.nodes.songsCurrentLabel.textContent).toBe('Awaiting start');
+  app.publish(2, { lockedEntryId: 'a', currentAttempt: { entryId: 'a', shortname: 'a', expected: true } });
+  expect(app.nodes.queueCurrentLabel.textContent).toBe('Now playing · Locked');
+  expect(app.nodes.songsCurrentLabel.textContent).toBe('Now playing');
+  expect(app.nodes.songsCurrentTitle.textContent).toBe('Title a');
+  expect(app.nodes.songsCurrentArtist.textContent).toBe('Artist');
+  app.publish(3, { status: 'completed', entries: [] });
+  expect(app.nodes.songsCurrent.hidden).toBe(true);
+  expect(app.nodes.queueCurrent.hidden).toBe(true);
 });
 test('remote dispatch removes edit controls for newly locked entry and stale action is explained, not retargeted', async () => {
   const app = appHarness(); app.publish(1);

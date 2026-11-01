@@ -110,6 +110,7 @@ const previewPlayer = new PreviewPlayer(elements.previewAudio, renderPreviewStat
 const queueElements = Object.fromEntries([
   'queuePage', 'queueSource', 'queueStatus', 'queueSyncStatus', 'queueWarning', 'queueProgress',
   'queueCurrent', 'queueCurrentTitle', 'queueCurrentArtist', 'queueCurrentLabel', 'queueControls',
+  'songsCurrent', 'songsCurrentTitle', 'songsCurrentArtist', 'songsCurrentLabel',
   'queuePauseButton', 'queueResumeButton', 'queueSkipButton', 'queueStopButton', 'queueControlHint',
   'queueActionStatus', 'queueRetryButton', 'queueUpcoming', 'queueEmpty', 'queueTerminalHint', 'queuePreviewAttribution', 'queuePreviewStoreLink',
   'queueCompactStatus', 'queueCompactText', 'openQueueButton', 'startQueueButton', 'queueStartHint', 'queueManualHint',
@@ -247,9 +248,15 @@ function renderQueue() {
   queueText(queueElements.queueProgress, session ? model.progress : '');
   queueElements.queueCurrent.hidden = !model.current;
   if (model.current) {
-    queueText(queueElements.queueCurrentLabel, session.currentAttempt ? 'Playing attempt · Locked' : 'Current · Locked');
+    queueText(queueElements.queueCurrentLabel, session.currentAttempt ? 'Now playing · Locked' : 'Awaiting start · Locked');
     queueText(queueElements.queueCurrentTitle, model.current.title || model.current.shortname);
     queueText(queueElements.queueCurrentArtist, model.current.artist || '—');
+  }
+  queueElements.songsCurrent.hidden = !model.current;
+  if (model.current) {
+    queueText(queueElements.songsCurrentLabel, session.currentAttempt ? 'Now playing' : 'Awaiting start');
+    queueText(queueElements.songsCurrentTitle, model.current.title || model.current.shortname);
+    queueText(queueElements.songsCurrentArtist, model.current.artist || '—');
   }
   queueElements.queueControls.hidden = !model.active;
   queueElements.queuePauseButton.hidden = session?.status !== 'running';
@@ -279,7 +286,7 @@ function renderQueue() {
       const title = document.createElement('strong');
       const artist = document.createElement('span'); artist.className = 'hint';
       const controls = document.createElement('div'); controls.className = 'queue-entry-controls';
-      for (const [icon, label, action] of [['↑', 'Move up', () => moveQueueEntry(entry.id, -1)], ['↓', 'Move down', () => moveQueueEntry(entry.id, 1)], ['−', 'Remove', () => removeQueueEntry(entry.id)]]) {
+      for (const [icon, label, action] of [['⇈', 'Move to top', () => moveQueueEntry(entry.id, 'top')], ['↑', 'Move up', () => moveQueueEntry(entry.id, -1)], ['↓', 'Move down', () => moveQueueEntry(entry.id, 1)], ['−', 'Remove', () => removeQueueEntry(entry.id)]]) {
         const button = document.createElement('button'); button.type = 'button'; button.className = 'small-button secondary';
         button.textContent = icon; button.title = label; button.setAttribute('aria-label', `${label}: ${entry.title || entry.shortname}`);
         button.addEventListener('click', action); controls.append(button);
@@ -290,8 +297,9 @@ function renderQueue() {
     queueText(row.children[1], entry.artist || '—');
     const buttons = row.children[2].children;
     buttons[0].disabled = !model.active || !queueClient.canCommand || index === 0;
-    buttons[1].disabled = !model.active || !queueClient.canCommand || index === model.upcoming.length - 1;
-    buttons[2].disabled = !model.active || !queueClient.canCommand;
+    buttons[1].disabled = !model.active || !queueClient.canCommand || index === 0;
+    buttons[2].disabled = !model.active || !queueClient.canCommand || index === model.upcoming.length - 1;
+    buttons[3].disabled = !model.active || !queueClient.canCommand;
     if (queueElements.queueUpcoming.children[index] !== row) queueElements.queueUpcoming.insertBefore(row, queueElements.queueUpcoming.children[index] || null);
     existing.delete(entry.id);
   });

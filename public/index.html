@@ -34,17 +34,17 @@
           </div>
         </div>
         <div class="panel-body">
-          <p id="queueSyncStatus" class="hint" role="status">Connecting to shared queue…</p>
-          <h3 id="queueStatus" role="status" aria-live="polite" tabindex="-1">No session queue</h3>
-          <p id="queueWarning" class="queue-warning" hidden></p>
-          <button id="queueRecoveryAdminButton" class="secondary" type="button" hidden>Open Admin recovery</button>
-          <p id="queueProgress" class="hint"></p>
           <section id="queueCurrent" class="queue-current" hidden aria-labelledby="queueCurrentLabel">
             <h3 id="queueCurrentLabel">Current · Locked</h3>
             <p id="queueCurrentTitle"></p>
             <p id="queueCurrentArtist" class="hint"></p>
             <p class="hint">Locked against removal and reordering. Players start gameplay; selection is not confirmation of play.</p>
           </section>
+          <p id="queueSyncStatus" class="hint" role="status">Connecting to shared queue…</p>
+          <h3 id="queueStatus" role="status" aria-live="polite" tabindex="-1">No session queue</h3>
+          <p id="queueWarning" class="queue-warning" hidden></p>
+          <button id="queueRecoveryAdminButton" class="secondary" type="button" hidden>Open Admin recovery</button>
+          <p id="queueProgress" class="hint"></p>
           <div id="queueControls" class="row button-row" hidden>
             <button id="queuePauseButton" class="primary" type="button">Pause</button>
             <button id="queueResumeButton" class="primary" type="button" hidden>Resume</button>
@@ -88,6 +88,11 @@
     </section>
 
     <section id="songsPage">
+      <section id="songsCurrent" class="panel queue-current" hidden aria-labelledby="songsCurrentLabel" aria-live="polite">
+        <h3 id="songsCurrentLabel">Now playing</h3>
+        <p id="songsCurrentTitle"></p>
+        <p id="songsCurrentArtist" class="hint"></p>
+      </section>
       <section class="panel control-panel">
         <div class="panel-header">
           <h2>Song lists</h2>
